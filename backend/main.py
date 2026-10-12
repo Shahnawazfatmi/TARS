@@ -28,7 +28,7 @@ client = genai.Client(
 planner = Planner(client)
 replanner = Replanner(client)
 verifier = Verifier()
-goal_verifier = GoalVerifier()
+goal_verifier = GoalVerifier(client)
 
 
 # ============================================================
@@ -154,7 +154,7 @@ def ask(data: Question):
 
 
     # ========================================================
-    # 1. CREATE PLAN
+    # 1. CREATE INITIAL PLAN
     # ========================================================
 
     plan = planner.create_plan(
@@ -181,7 +181,7 @@ def ask(data: Question):
 
 
     # ========================================================
-    # 3. EXECUTE PLANNED TOOLS
+    # 3. EXECUTE INITIAL PLAN
     # ========================================================
 
     tool_results = {}
@@ -193,6 +193,7 @@ def ask(data: Question):
             continue
 
         try:
+
             result = tool_registry[tool_name]()
 
             tool_results[tool_name] = result
@@ -221,66 +222,78 @@ def ask(data: Question):
     print("\nVERIFICATION:")
     print(verification)
 
+
+    # ========================================================
+    # 4A. REPLAN IF TOOL EXECUTION FAILED
+    # ========================================================
+
     if not verification["verified"]:
 
-     print("\nREPLANNING...")
+        print("\nREPLANNING...")
 
-    replan = replanner.create_replan(
-        goal=data.question,
-        previous_plan=plan,
-        tool_results=tool_results,
-        verification=verification,
-        goal_verification={},
-        available_tools=[tool["name"] for tool in tools]
-    )
+        replan = replanner.create_replan(
+            goal=data.question,
+            previous_plan=plan,
+            tool_results=tool_results,
+            verification=verification,
+            goal_verification={},
+            available_tools=[tool["name"] for tool in tools]
+        )
 
-    print("\nREPLAN:")
-    print(replan)
+        print("\nREPLAN:")
+        print(replan)
 
-    # Execute the new plan
-    replan_results = {}
+        replan_results = {}
 
-    for step in replan.get("steps", []):
+        for step in replan.get("steps", []):
 
-        tool_name = step.get("tool")
+            tool_name = step.get("tool")
 
-        if not tool_name:
-            continue
+            if not tool_name:
+                continue
 
-        if tool_name not in tool_registry:
-            continue
+            if tool_name not in tool_registry:
+                continue
 
-        try:
-            result = tool_registry[tool_name]()
-            replan_results[tool_name] = result
+            try:
 
-            print(f"\nREPLANNED TOOL EXECUTED: {tool_name}")
-            print(result)
+                result = tool_registry[tool_name]()
 
-        except Exception as e:
-            replan_results[tool_name] = {
-                "error": str(e)
+                replan_results[tool_name] = result
+
+                print(f"\nREPLANNED TOOL EXECUTED: {tool_name}")
+                print(result)
+
+            except Exception as e:
+
+                replan_results[tool_name] = {
+                    "error": str(e)
+                }
+
+        replan_verification = verifier.verify(
+            replan,
+            replan_results
+        )
+
+        print("\nREPLAN VERIFICATION:")
+        print(replan_verification)
+
+        if not replan_verification["verified"]:
+
+            return {
+                "response": (
+                    "FATMEE could not complete the task "
+                    "after replanning."
+                ),
+                "verification": replan_verification
             }
 
-    # Verify the recovery attempt
-    replan_verification = verifier.verify(
-        replan,
-        replan_results
-    )
+        # Add successful recovery results
+        tool_results.update(replan_results)
 
-    print("\nREPLAN VERIFICATION:")
-    print(replan_verification)
 
-    if not replan_verification["verified"]:
-        return {
-            "response": "FATMEE could not complete the task after replanning.",
-            "verification": replan_verification
-        }
-
-    # Use successful recovery results
-    tool_results.update(replan_results)
     # ========================================================
-    # 5. VERIFY GOAL
+    # 5. VERIFY USER GOAL
     # ========================================================
 
     goal_verification = goal_verifier.verify(
@@ -292,15 +305,114 @@ def ask(data: Question):
     print("\nGOAL VERIFICATION:")
     print(goal_verification)
 
+
+    # ========================================================
+    # 5A. REPLAN IF USER GOAL IS NOT SATISFIED
+    # ========================================================
+
     if not goal_verification["goal_satisfied"]:
-        return {
-            "response": (
-                "FATMEE does not have enough information "
-                "to complete the task."
-            ),
-            "verification": verification,
-            "goal_verification": goal_verification
-        }
+
+        print("\nGOAL NOT SATISFIED - REPLANNING...")
+
+        replan = replanner.create_replan(
+            goal=data.question,
+            previous_plan=plan,
+            tool_results=tool_results,
+            verification=verification,
+            goal_verification=goal_verification,
+            available_tools=[tool["name"] for tool in tools]
+        )
+
+        print("\nGOAL RECOVERY PLAN:")
+        print(replan)
+
+        replan_results = {}
+
+        for step in replan.get("steps", []):
+
+            tool_name = step.get("tool")
+
+            if not tool_name:
+                continue
+
+            if tool_name not in tool_registry:
+                print(f"WARNING: Recovery tool not found: {tool_name}")
+                continue
+
+            try:
+
+                result = tool_registry[tool_name]()
+
+                replan_results[tool_name] = result
+
+                print(f"\nRECOVERY TOOL EXECUTED: {tool_name}")
+                print(result)
+
+            except Exception as e:
+
+                replan_results[tool_name] = {
+                    "error": str(e)
+                }
+
+                print(f"\nERROR executing recovery tool: {e}")
+
+
+        # ----------------------------------------------------
+        # VERIFY RECOVERY TOOL EXECUTION
+        # ----------------------------------------------------
+
+        replan_verification = verifier.verify(
+            replan,
+            replan_results
+        )
+
+        print("\nRECOVERY VERIFICATION:")
+        print(replan_verification)
+
+
+        if not replan_verification["verified"]:
+
+            return {
+                "response": (
+                    "FATMEE could not complete the task "
+                    "after recovery."
+                ),
+                "verification": replan_verification,
+                "goal_verification": goal_verification
+            }
+
+
+        # ----------------------------------------------------
+        # ADD RECOVERY RESULTS
+        # ----------------------------------------------------
+
+        tool_results.update(replan_results)
+
+
+        # ----------------------------------------------------
+        # VERIFY USER GOAL AGAIN
+        # ----------------------------------------------------
+
+        goal_verification = goal_verifier.verify(
+            data.question,
+            plan,
+            tool_results
+        )
+
+        print("\nGOAL VERIFICATION AFTER REPLANNING:")
+        print(goal_verification)
+
+
+        if not goal_verification["goal_satisfied"]:
+
+            return {
+                "response": (
+                    "FATMEE still does not have enough "
+                    "information to complete the task."
+                ),
+                "verification": replan_verification,
+                "goal_verification": goal_verification
+            }
 
 
     # ========================================================
@@ -320,7 +432,7 @@ def ask(data: Question):
 
 
     # ========================================================
-    # 7. SEND TOOL RESULTS TO GEMINI
+    # 7. ANALYZE TOOL RESULTS WITH GEMINI
     # ========================================================
 
     system_instruction = """
