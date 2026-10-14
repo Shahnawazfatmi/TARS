@@ -59,12 +59,28 @@ Ask "Research the latest AI agent trends and make a Word report". The `create_do
 - Only saves inside your own folders (home, Desktop, Documents, Downloads).
 - The AI plans the text in one call, and the code builds the file, so the file is always valid.
 
+## Images
+
+Ask "Make a square LinkedIn image about AI agents helping small shops". The `create_image` tool makes one picture, crops it to the exact LinkedIn size and saves a PNG in `Desktop\FATMEE Images\`.
+
+- Shapes: `square` 1200×1200 (default), `landscape` 1200×627, `portrait` 1080×1350.
+- Models: OpenAI `gpt-image-1-mini` first, Gemini `gemini-2.5-flash-image` as backup (`FATMEE_IMAGE_PROVIDERS`).
+- No text in the picture unless you ask for it. At most 2 images per question (`FATMEE_MAX_IMAGES_PER_TASK`).
+- Styles: `photo` (realistic, the default: `FATMEE_IMAGE_DEFAULT_STYLE`), `illustration`, `3d`, `isometric`, `graphic`, or your own word ("watercolor").
+- When the topic is AI, the AI is shown clearly at work (a screen, robot or device), and agents are shown doing tasks by themselves.
+- The picture shows ONE concrete idea from the results, with no AI clichés (glowing brains, floating dashboards). The log line `Image idea:` shows what was chosen.
+- It can show earlier results: "Research AI in retail and make a LinkedIn image about it".
+
 ## Task diary (episodic memory)
 
 Every task, answered or failed, is saved in the same file with its time, duration, tools, status and a short summary. Ask about the past in plain words: "What did I ask you yesterday?", "Did I check my battery this week?", "What failed today?". The `recall_tasks` tool looks it up, and dates are worked out from your PC's clock.
 
 - `GET /episodes?day=today` (or `yesterday`, `monday`, `2026-10-12`), `&days_back=7`, `&keyword=battery`, `&status=failed`, `&session_id=...`, `&limit=20`.
 - Saving happens after the reply is sent, so it adds no wait. Searches stay at about 5–80 ms even with 50,000 entries.
+
+## Adding things
+
+See "How FATMEE grows" in [docs/FATMEE_GUIDE.md](docs/FATMEE_GUIDE.md): a new tool is one `Tool(...)` entry in `backend/tools/registry.py`, an outside service is one entry in `mcp_servers.json`, and a new AI model company is one class in `llm.py` or `image_gen.py`.
 
 ## How a request flows
 
@@ -99,6 +115,7 @@ Every model call goes through `backend/llm.py`: it tries OpenAI first and switch
 | `research_topic(topic, max_sources, time_range)` | Web research with numbered sources (needs `TAVILY_API_KEY`) |
 | `think(instruction)` | Works on earlier steps' results: compare, pick, summarize, write. Later steps use its answer as `$s2` |
 | `create_document(instruction, title, content, file_name, folder, open_after)` | Word report from earlier steps' results, saved on your PC |
+| `create_image(description, instruction, shape, style, text_in_image, file_name, folder, open_after)` | A LinkedIn-sized PNG, saved on your PC |
 | `tavily_extract` (via MCP) | Reads the content of given web pages (needs `TAVILY_API_KEY`) |
 
 ## Settings (`backend/.env`)
@@ -118,6 +135,13 @@ Every model call goes through `backend/llm.py`: it tries OpenAI first and switch
 | `FATMEE_HISTORY_MESSAGES` | `10` | Recent messages FATMEE reads before answering (10 = last 5 exchanges) |
 | `FATMEE_HISTORY_CHARS` | `1500` | Longer earlier answers are shortened to this for the model |
 | `FATMEE_DOCUMENTS_DIR` | `Desktop\FATMEE Reports` | Where Word documents are saved |
+| `FATMEE_IMAGE_PROVIDERS` | `openai,gemini` | Order image models are tried in |
+| `FATMEE_OPENAI_IMAGE_MODEL` | `gpt-image-1-mini` | OpenAI image model (`gpt-image-2` looks better, costs more) |
+| `FATMEE_OPENAI_IMAGE_QUALITY` | `medium` | `low`, `medium` or `high` |
+| `FATMEE_GEMINI_IMAGE_MODEL` | `gemini-2.5-flash-image` | Gemini backup image model |
+| `FATMEE_IMAGE_DEFAULT_STYLE` | `photo` | Look used when you name none (empty = the AI picks) |
+| `FATMEE_IMAGES_DIR` | `Desktop\FATMEE Images` | Where images are saved |
+| `FATMEE_MAX_IMAGES_PER_TASK` | `2` | Most images made for one question |
 
 ## Tests
 

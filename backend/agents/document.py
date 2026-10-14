@@ -7,7 +7,8 @@ Document agent: turns earlier results into a Word (.docx) report.
 The AI plans the content (title, sections, bullets) in one call, and
 the code builds the file, so the file is always valid and looks the
 same every time. Research sources become a clickable "Sources" list.
-Files are saved inside the user's folders and never overwritten.
+Files are saved by the shared rules in agents/files.py: only inside
+the user's folders, never overwritten.
 """
 
 import json
@@ -18,6 +19,7 @@ from datetime import datetime
 from pathlib import Path
 
 import config
+from agents import files
 
 
 logger = logging.getLogger("fatmee.document")
@@ -26,9 +28,6 @@ _llm = None
 
 # Source numbers like [1] inside research text.
 _CITE = re.compile(r"\[(\d+)\]")
-
-# Characters Windows does not allow in file names.
-_BAD_NAME_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 
 # Control characters that are not allowed inside a Word file.
 _BAD_XML_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
@@ -45,114 +44,17 @@ def configure(llm) -> None:
 
 # ---------------- where files go ----------------
 
-def _known_folder(name: str) -> Path | None:
-    """The real Desktop / Documents / Downloads folder (it may be moved, e.g. to OneDrive)."""
-
-    if os.name == "nt":
-        value_names = {
-            "desktop": "Desktop",
-            "documents": "Personal",
-            "downloads": "{374DE290-123F-4565-9164-39C4925E467B}",
-        }
-
-        try:
-            import winreg
-
-            with winreg.OpenKey(
-                winreg.HKEY_CURRENT_USER,
-                r"Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders",
-            ) as key:
-                value, _ = winreg.QueryValueEx(key, value_names[name])
-                path = Path(os.path.expandvars(value))
-
-                if path.is_dir():
-                    return path
-
-        except (OSError, KeyError):
-            pass
-
-    path = Path.home() / name.capitalize()
-
-    return path if path.is_dir() else None
-
-
-def _allowed_roots() -> list:
-    roots = [Path.home()]
-
-    for name in ("desktop", "documents", "downloads"):
-        folder = _known_folder(name)
-
-        if folder:
-            roots.append(folder)
-
-    return [root.resolve() for root in roots]
-
-
 def _default_folder() -> Path:
     if config.DOCUMENTS_DIR:
         return Path(os.path.expanduser(config.DOCUMENTS_DIR))
 
-    return (_known_folder("desktop") or Path.home()) / "FATMEE Reports"
+    return files.desktop_folder("FATMEE Reports")
 
 
 def resolve_folder(folder: str = "") -> Path:
-    """
-    Turn the folder the user asked for into a safe path.
+    """Where to save: "" = Desktop/FATMEE Reports (see agents/files.py for the rules)."""
 
-    "" is the default (Desktop\\FATMEE Reports). "desktop", "documents"
-    and "downloads" are the real Windows folders. Other relative paths
-    are inside the user's home folder. Anything outside the user's own
-    folders is refused (ValueError).
-    """
-
-    folder = (folder or "").strip().strip('"')
-
-    if not folder:
-        path = _default_folder()
-
-    elif folder.lower().strip("~/\\ ") in ("desktop", "documents", "downloads"):
-        path = _known_folder(folder.lower().strip("~/\\ ")) or Path.home()
-
-    else:
-        path = Path(os.path.expanduser(folder))
-
-        if not path.is_absolute():
-            path = Path.home() / path
-
-    path = path.resolve()
-
-    if not any(path == root or path.is_relative_to(root) for root in _allowed_roots()):
-        raise ValueError(f"FATMEE only saves documents inside your own folders, not in {path}.")
-
-    return path
-
-
-def safe_file_name(name: str, fallback: str = "FATMEE report") -> str:
-    """A valid Windows file name ending in .docx."""
-
-    name = (name or "").strip()
-
-    if name.lower().endswith(".docx"):
-        name = name[:-5]
-
-    name = _BAD_NAME_CHARS.sub(" ", name)
-    name = re.sub(r"\s+", " ", name).strip(" .")[:80].strip(" .")
-
-    return f"{name or fallback}.docx"
-
-
-def unique_path(folder: Path, file_name: str) -> Path:
-    """Never overwrite: "report.docx" becomes "report (2).docx" if taken."""
-
-    path = folder / file_name
-    stem, suffix = path.stem, path.suffix
-    number = 2
-
-    while path.exists():
-        path = folder / f"{stem} ({number}){suffix}"
-        number += 1
-
-    return path
+    return files.resolve_folder(folder, _default_folder())
 
 
 # ---------------- sources ----------------
@@ -410,13 +312,6 @@ def build_docx(doc_content: dict, sources: list, path: Path) -> int:
 
 # ---------------- the tool ----------------
 
-def _yes(value) -> bool:
-    if isinstance(value, str):
-        return value.strip().lower() in ("true", "yes", "1")
-
-    return bool(value)
-
-
 def create_document(
     instruction: str = "",
     title: str = "",
@@ -455,7 +350,7 @@ def create_document(
     if not doc_content["sections"] and not doc_content["summary"]:
         return {"error": "The document came out empty."}
 
-    path = unique_path(target, safe_file_name(file_name or doc_content["title"]))
+    path = files.unique_path(target, files.safe_file_name(file_name or doc_content["title"], ".docx", "FATMEE report"))
 
     try:
         words = build_docx(doc_content, sources, path)
@@ -465,11 +360,8 @@ def create_document(
 
     logger.info("Document saved: %s (%d words)", path, words)
 
-    if _yes(open_after) and hasattr(os, "startfile"):
-        try:
-            os.startfile(str(path))
-        except OSError:
-            pass
+    if files.as_bool(open_after):
+        files.open_file(path)
 
     return {
         "saved": True,

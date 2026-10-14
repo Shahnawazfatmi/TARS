@@ -5,9 +5,8 @@ import pytest
 from docx import Document
 from fastapi.testclient import TestClient
 
-import config
 import main
-from agents import document
+from agents import document, files
 from conftest import FakeProvider
 from executor import execute_plan
 from llm import LLM
@@ -37,15 +36,6 @@ RESEARCH_B = {
 
 
 @pytest.fixture
-def docs_dir(tmp_path, monkeypatch):
-    """Save test documents in a temp folder, never on the real Desktop."""
-
-    monkeypatch.setattr(config, "DOCUMENTS_DIR", str(tmp_path))
-    monkeypatch.setattr(document, "_allowed_roots", lambda: [tmp_path.resolve()])
-    return tmp_path
-
-
-@pytest.fixture
 def fake_writer(monkeypatch):
     fake = FakeProvider({"document writer": CONTENT})
     monkeypatch.setattr(document, "_llm", LLM([fake]))
@@ -61,17 +51,18 @@ def fake_writer(monkeypatch):
     ("", "FATMEE report.docx"),
 ])
 def test_safe_file_name(name, expected):
-    assert document.safe_file_name(name) == expected
+    assert files.safe_file_name(name, ".docx", "FATMEE report") == expected
+    assert files.safe_file_name("cat.png", ".png", "img") == "cat.png"
 
 
 def test_never_overwrites(tmp_path):
     (tmp_path / "r.docx").write_text("x")
     (tmp_path / "r (2).docx").write_text("x")
-    assert document.unique_path(tmp_path, "r.docx").name == "r (3).docx"
+    assert files.unique_path(tmp_path, "r.docx").name == "r (3).docx"
 
 
 def test_folder_outside_user_folders_is_refused(docs_dir):
-    with pytest.raises(ValueError, match="only saves documents"):
+    with pytest.raises(ValueError, match="only saves files"):
         document.resolve_folder("C:/Windows/System32")
 
     assert document.resolve_folder("") == docs_dir.resolve()
@@ -79,7 +70,8 @@ def test_folder_outside_user_folders_is_refused(docs_dir):
 
 
 def test_desktop_is_found():
-    assert document._known_folder("desktop").is_dir()
+    assert files.known_folder("desktop").is_dir()
+    assert files.as_bool("true") and files.as_bool(True) and not files.as_bool("no")
 
 
 # ---------------- sources ----------------
@@ -155,7 +147,7 @@ def test_document_errors(docs_dir, monkeypatch):
     monkeypatch.setattr(document, "_llm", LLM([FakeProvider({"document writer": '{"sections": []}'})]))
     assert "empty" in document.create_document(instruction="x")["error"]
 
-    assert "only saves" in document.create_document(instruction="x", folder="C:/Windows")["error"]
+    assert "only saves files" in document.create_document(instruction="x", folder="C:/Windows")["error"]
 
 
 # ---------------- in a plan ----------------
@@ -192,5 +184,5 @@ def test_api_research_style_plan_makes_document(docs_dir, fake_llm, monkeypatch)
     # planner was taught to use create_document without an extra think step
     assert "create_document" in fake.calls[0]["prompt"]
     # the final answer is told to say where the file is
-    final = [c for c in fake.calls if c["system"] and "document was saved" in c["system"]]
+    final = [c for c in fake.calls if c["system"] and "When a file was saved" in c["system"]]
     assert final

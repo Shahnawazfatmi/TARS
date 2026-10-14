@@ -78,7 +78,11 @@ PLAN_FORMAT_RULES = """- Give every step an id: "{prefix}1", "{prefix}2", ...
   final answer itself.
 - For a Word document or report, use "create_document" and put the
   steps whose results go in it in its "depends_on". It writes the
-  content itself, so do not add a think step to write it first."""
+  content itself, so do not add a think step to write it first.
+- For a picture, use "create_image" only when the user asks for an
+  image. Put the user's picture details in "description". If the
+  picture should show earlier results, list those steps in its
+  "depends_on". One create_image step makes one picture."""
 
 
 class Planner:

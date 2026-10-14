@@ -7,7 +7,7 @@ import config
 from plan_check import PlanError, check_plan, execution_waves
 from planner import normalize_steps
 from references import MissingInput, find_refs, resolve
-from tools.registry import requires_approval, run_tool, takes_inputs
+from tools.registry import max_per_task, requires_approval, run_tool, takes_inputs
 
 
 logger = logging.getLogger("fatmee.executor")
@@ -92,6 +92,8 @@ def _run(step: dict):
     if isinstance(shown.get("inputs"), dict):
         shown["inputs"] = f"<results of {', '.join(shown['inputs']) or 'no steps'}>"
 
+    shown.pop("user_request", None)
+
     logger.info(
         "Tool %s%s finished in %.2fs",
         step["tool"],
@@ -102,12 +104,56 @@ def _run(step: dict):
     return result
 
 
-def execute_plan(plan: dict) -> dict:
+def over_limit_steps(steps: list, earlier_steps: list | None = None) -> dict:
+    """
+    Steps that would run a tool more often than its max_per_task.
+
+    Steps already run for this question (earlier_steps, e.g. before a
+    recovery plan) count too, so replanning cannot get around the
+    limit. Returns {step id: limit}.
+    """
+
+    used = {}
+
+    for step in earlier_steps or []:
+        tool = step.get("tool")
+
+        if tool and max_per_task(tool):
+            used[tool] = used.get(tool, 0) + 1
+
+    over = {}
+    seen = set()
+
+    for step in steps:
+        tool = step.get("tool")
+        limit = max_per_task(tool)
+
+        if not limit:
+            continue
+
+        key = _dedupe_key(step)
+
+        if key in seen:        # a duplicate shares the first step's result
+            continue
+
+        seen.add(key)
+        used[tool] = used.get(tool, 0) + 1
+
+        if used[tool] > limit:
+            over[step["id"]] = limit
+
+    return over
+
+
+def execute_plan(plan: dict, earlier_steps: list | None = None, question: str = "") -> dict:
     """
     Run the plan's tool steps in dependency order.
 
     Steps in the same wave run in parallel; a step starts only after
-    every step it depends on has finished.
+    every step it depends on has finished. earlier_steps are the steps
+    already run for this question (used for per-question limits).
+    question is the user's own words, given to tools that take inputs
+    (as "user_request"; tools without that parameter ignore it).
     """
 
     # Gives ids and depends_on to plans that were not made by the
@@ -132,6 +178,8 @@ def execute_plan(plan: dict) -> dict:
         for step, key in zip(unique, result_keys(unique))
     }
 
+    over_limit = over_limit_steps(steps, earlier_steps)
+
     results = {}
     by_id = {}            # step id -> result, for "$s1" references
     key_of = {}           # step id -> result key
@@ -152,6 +200,16 @@ def execute_plan(plan: dict) -> dict:
             if key in results or key in (k for k, _ in batch):
                 continue
 
+            if step["id"] in over_limit:
+                limit = over_limit[step["id"]]
+                results[key] = {
+                    "error": f"Skipped: FATMEE runs {step['tool']} at most {limit} "
+                             f"time{'s' if limit != 1 else ''} per question.",
+                    "limit_reached": True,
+                }
+                by_id[step["id"]] = results[key]
+                continue
+
             # Fill in "$s1"-style references with earlier results. A
             # step whose input failed is skipped, not run with bad input.
             try:
@@ -166,6 +224,9 @@ def execute_plan(plan: dict) -> dict:
                 # think / create_document work on the results they wait for.
                 needed = set(step.get("depends_on", [])) | (find_refs(step.get("args") or {}) & step_ids)
                 args = {**args, "inputs": {sid: by_id[sid] for sid in sorted(needed) if sid in by_id}}
+
+                if question:
+                    args["user_request"] = question
 
             if requires_approval(step["tool"]):
                 # Approval pausing arrives with the first tool that

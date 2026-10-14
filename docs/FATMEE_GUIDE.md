@@ -3,7 +3,7 @@
 A simple guide to how FATMEE is built: every step we took, why, and how it works.
 Read it top to bottom once. Later, jump to the step you need.
 
-*Last updated: 14 Oct 2026, after Step 10.*
+*Last updated: 14 Oct 2026, after Step 11.*
 
 ---
 
@@ -58,7 +58,7 @@ graph.py           FATMEE's "brain map" (LangGraph). Runs these steps:
    ▼
 memory.py          saves the conversation + a diary entry (after you get the answer)
 
-Agents a step can use: research (web), think (reason), document (Word file)
+Agents a step can use: research (web), think (reason), document (Word file), image (picture)
 ```
 
 All AI calls go through `llm.py`: **OpenAI first, Gemini as a backup**.
@@ -267,7 +267,136 @@ s2  create_document  depends_on: [s1]              Wave 2   (4.3 s)
 
 ---
 
-## 5. Words you'll see
+### Step 11: Image agent, pictures for LinkedIn (14 Oct)
+
+**What:** FATMEE makes a picture, sized exactly for LinkedIn, and saves it as a PNG.
+
+**Try:**
+- "Make a square LinkedIn image about AI agents helping small shops."
+- "Make an image of a robot reading a newspaper, watercolor style, wide."
+- "Research AI in retail and make a LinkedIn image about it." (research → image)
+
+**Real example** (tested live, 25.6 seconds, 5 AI calls, 1 of them an image call):
+```
+s1  create_image  shape: square                     Wave 1   (17.7 s)
+      1. writes a picture description   (1 small text call)
+      2. makes the picture              (1 image call, gpt-image-1-mini)
+      3. code crops it to 1200×1200 and saves
+      → Desktop\FATMEE Images\AI Agents for Retail.png
+```
+
+**How it works:**
+1. **The picture description.** If you describe the picture clearly, it's used as it is, so no extra call is spent. If the picture must come from earlier results (like research), or you only gave a short idea, one small text call writes a good description first.
+2. **Fixed rules are added in code**, so they always apply. The main one: **no text in the picture** unless you ask for it, because image AIs often misspell words. If you want words, say so: "with the title 'AI in Retail'".
+3. **The image call** goes through `image_gen.py`. It works like `llm.py` does for text: **OpenAI first** (`gpt-image-1-mini`, the cheapest), **Gemini as backup**.
+4. **Exact LinkedIn size.** The code crops from the centre and resizes, using Pillow:
+
+| Shape | Size | Best for |
+|---|---|---|
+| `square` (default) | 1200 × 1200 | A normal post |
+| `landscape` | 1200 × 627 | A link or article post |
+| `portrait` | 1080 × 1350 | A tall post that takes more space in the feed |
+
+You can also say "wide", "banner", "tall", "16:9" or "4:5". The code understands those words.
+
+**Rules:**
+- **Credit guard:** at most **2 images per question**, counted in code. Even a recovery plan can't get around it.
+- Saved in `Desktop\FATMEE Images\` with the same safe-saving rules as Word files (only your folders, never overwrite). Those rules now live in one shared file, `agents/files.py`.
+- No approval needed for making the picture. Approval comes when it's **posted** (Step 13).
+- The result includes the file path, so a later step can use it, e.g. a LinkedIn post attaching `$s2.path`.
+
+**Styles:** say "photo", "illustration", "3d", "isometric" or "graphic", or your own word, like "watercolor". If you don't say one, FATMEE picks the style that suits the topic.
+
+**Fix after your tests: the pictures looked generic.** Your first pictures all looked the same: people in a meeting, glowing brains, floating charts, all in teal. The research said something specific ("AI virtual scientists in drug discovery"), but the picture showed "AI in general".
+
+*Why:* the picture-description instructions said "professional, suitable for LinkedIn", so the AI played it safe with stock-photo clichés. Nothing told it to pick one specific idea.
+
+*What changed:*
+1. The description writer now works in **3 steps**:
+   - **concept:** the single most concrete finding
+   - **scene:** who, what and where, with real objects from that field
+   - **style:** photo, illustration, 3d, isometric or graphic
+2. **Clichés are banned:** glowing brains, circuit lines, floating holograms, robot handshakes, meeting rooms, all-blue "tech" looks.
+3. **Bright and clear:** the picture must read well as a small thumbnail in a fast feed.
+4. Links and file paths are no longer sent to the description writer (they don't help it draw), which also saves tokens.
+5. **The log shows the idea:** `Image idea: <concept> | style: photo | <description>`. If a picture looks wrong, you can see why.
+6. **The answer keeps the research:** when research is done, the answer always lists its key findings with [1], [2] and the Sources, even when a file was also made.
+
+*Result of the same question after the fix:* "two AI agents discovering a hidden biomedical link", shown as a real lab photo with a microscope, petri dish and notes. It was specific, not generic, but too dark, so a "bright and clear" rule was added afterwards.
+
+**Second fix: the AI was invisible.** The next test ("AI in healthcare, photo style") gave a nice, bright hospital photo, but you couldn't see any AI: a nurse with papers and a blurry screen. The cliché ban had gone too far and removed every way of showing AI.
+
+*What changed:*
+1. **When the topic is AI, the AI is the hero:** clearly visible, in focus and near the centre. It's shown the way AI really looks today: a screen where an assistant is visibly working, a robot or robotic arm, a smart device.
+2. **AI agents are shown doing a task by themselves** while people supervise.
+3. **The ban is narrower:** holograms floating in empty air are still banned, but real screens showing AI at work are fine.
+4. **Your own words reach the writer.** The executor passes your question in as `user_request`, so words like "agentic" aren't lost in the planner's summary.
+5. **Realistic photos are the default** (`FATMEE_IMAGE_DEFAULT_STYLE=photo`): real people, real places, real devices, nothing science-fiction. If your own description already names a look ("a cartoon nurse", "watercolor"), the default isn't added on top of it.
+
+*Result:* "Research agentic AI in healthcare this week and make a wide LinkedIn image" gave the idea **"an AI agent clears prior-authorization requests by itself while a clinician reviews only the exceptions"**. The picture shows a realistic hospital office: a big monitor where an AI agent avatar sorts a queue of patient cases, flagging them green or red, and a nurse checking the exceptions on a tablet.
+
+**How the picture prompt is made** (half AI, half code):
+```
+research results (no links) + your words
+        → AI writer (1 text call): concept, scene, style, description   ← creative, changes every time
+        → code adds fixed rules: shape, style line, "no text"           ← always the same
+        → image model draws → code crops to the LinkedIn size
+```
+
+**Change the model or quality** in `backend/.env`:
+```
+FATMEE_OPENAI_IMAGE_MODEL=gpt-image-2      # better looking, costs more
+FATMEE_OPENAI_IMAGE_QUALITY=high           # low / medium / high
+FATMEE_IMAGE_DEFAULT_STYLE=photo           # photo / illustration / 3d / isometric / graphic, or empty = AI picks
+FATMEE_MAX_IMAGES_PER_TASK=2
+```
+
+**Files:** `agents/image.py`, `image_gen.py`, `agents/files.py`, `tools/registry.py` (the `max_per_task` flag), `executor.py`, `graph.py` (answer keeps research)
+
+---
+
+## 5. How FATMEE grows: adding things later
+
+FATMEE is built from **separate pieces that plug together**. Adding something new means adding one piece, without rewriting the others.
+
+```
+          ┌──────────── doors ────────────┐
+          │ web API now · voice · chat UI │   all call the same run()
+          └───────────────┬───────────────┘
+                          ▼
+              brain: graph.py (plan → run → check → answer)
+                          │ only knows "tools"
+                          ▼
+             tool list: tools/registry.py
+     ┌─────────┬──────────┼──────────┬──────────────┐
+     ▼         ▼          ▼          ▼              ▼
+  system    agents/     MCP tools   memory       (future tools)
+  tools     research,   (Tavily,    (diary,
+            think, doc, LinkedIn,   later facts /
+            image       Gmail...)   vector DB)
+                          │
+       shared services: llm.py (text) · image_gen.py (images)
+                        agents/files.py (safe saving) · config.py
+```
+
+| To add… | What you do | What doesn't change |
+|---|---|---|
+| **A new built-in tool** | Write the function, then add **one `Tool(...)` entry** in `tools/registry.py`. The planner sees it automatically. | The planner, executor, graph |
+| **A tool that needs your OK** | Set `needs_approval=True` on its entry | The AI can't switch it off |
+| **A tool that reads earlier results** | Set `takes_inputs=True` | The executor passes them in |
+| **A paid or limited tool** | Set `max_per_task=N` | Counted in code |
+| **A new agent** | Write `agents/<name>.py`, give it a `configure()` if it needs the AI, add it in `agents/__init__.py` and in the tool list | Other agents |
+| **An outside service (MCP)** | Add an entry in `mcp_servers.json` and its key in `.env`. **No code.** `expose` picks the tools; `approval` marks the ones that need your OK | Everything |
+| **A new AI model company** | Text: one class in `llm.py`. Images: one class in `image_gen.py`. Pick the order in `.env` | The agents |
+| **An agent that saves files** | Use `agents/files.py` for the folder, name and no-overwrite rules | The safety rules |
+| **A vector database** (for "remember people and facts", Step 14) | One more store class in `memory.py` (next to the conversation and the diary), plus one tool such as `recall_facts`. Options: `sqlite-vec` (stays in the same file) or Chroma / Qdrant if it grows | The planner, other memories |
+| **Voice or a chat screen** | A new "door" that calls the same `run()` | The brain and the tools |
+
+**Rule of thumb:** each piece only talks to the pieces next to it. The brain knows "tools", not Tavily or OpenAI. The agents know `llm` and `image_gen`, not which company is behind them. That's why we can swap or add parts safely.
+
+---
+
+## 6. Words you'll see
 
 | Word | Meaning |
 |---|---|
@@ -286,11 +415,14 @@ s2  create_document  depends_on: [s1]              Wave 2   (4.3 s)
 | **Task ID** | A unique number for one question/job |
 | **Approval** | Your OK before anything public or sent |
 | **`.docx`** | A Word document file |
-| **Inputs** | Earlier steps' results that a think or document step reads |
+| **Inputs** | Earlier steps' results that a think, document or image step reads |
+| **PNG** | A picture file |
+| **Provider** | The AI company behind a call (OpenAI, Gemini). FATMEE tries them in order |
+| **Vector database** | Memory that finds things by meaning, not exact words ("my boss" ≈ "my sir"). Planned for Step 14 |
 
 ---
 
-## 6. Files at a glance
+## 7. Files at a glance
 
 | File | Job |
 |---|---|
@@ -310,6 +442,9 @@ s2  create_document  depends_on: [s1]              Wave 2   (4.3 s)
 | `agents/research.py` | Research agent |
 | `agents/thinker.py` | Think step |
 | `agents/document.py` | Word documents |
+| `agents/image.py` | Pictures for LinkedIn |
+| `agents/files.py` | Safe saving rules for every file an agent makes |
+| `image_gen.py` | Talks to the OpenAI / Gemini image models |
 | `tools/registry.py` | Catalog of all tools |
 | `tools/system_tools.py` | Windows tools (RAM, disk, Wi-Fi…) |
 | `tools/memory_tools.py` | Diary search tool |
@@ -321,7 +456,7 @@ https://claude.ai/artifact/7rda8xaTM8AEm7YUvBKY7j
 
 ---
 
-## 7. How to run and test
+## 8. How to run and test
 
 **Start FATMEE:**
 ```powershell
@@ -348,13 +483,12 @@ Open http://127.0.0.1:8000/docs
 
 ---
 
-## 8. What's next
+## 9. What's next
 
-Done: Steps 1–10.
+Done: Steps 1–11.
 
 | # | Step | What you'll get |
 |---|---|---|
-| 11 | Image agent | A picture sized for LinkedIn |
 | 12 | Approval + chat screen | FATMEE waits for your Approve click |
 | 13 | LinkedIn | Your full example works |
 | 14 | Semantic memory | Remembers people ("my sir") and facts |

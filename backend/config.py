@@ -117,3 +117,40 @@ DOCUMENTS_DIR = os.getenv("FATMEE_DOCUMENTS_DIR", "")
 
 # Characters of earlier results the document agent may read.
 DOCUMENT_INPUT_CHARS = int(os.getenv("FATMEE_DOCUMENT_INPUT_CHARS", "30000"))
+
+
+# ============================================================
+# IMAGE AGENT
+# ============================================================
+
+# Image providers are tried in this order (same keys as the text models).
+IMAGE_PROVIDERS = [
+    name.strip().lower()
+    for name in os.getenv("FATMEE_IMAGE_PROVIDERS", "openai,gemini").split(",")
+    if name.strip()
+]
+
+# gpt-image-1-mini is the cheapest; gpt-image-2 looks better but costs more.
+OPENAI_IMAGE_MODEL = os.getenv("FATMEE_OPENAI_IMAGE_MODEL", "gpt-image-1-mini")
+
+# low / medium / high: higher looks better and costs more.
+OPENAI_IMAGE_QUALITY = os.getenv("FATMEE_OPENAI_IMAGE_QUALITY", "medium")
+
+GEMINI_IMAGE_MODEL = os.getenv("FATMEE_GEMINI_IMAGE_MODEL", "gemini-2.5-flash-image")
+
+# Seconds to wait for one image (images are slower than text).
+IMAGE_TIMEOUT = float(os.getenv("FATMEE_IMAGE_TIMEOUT", "120"))
+
+# Where images are saved. Empty = Desktop\FATMEE Images.
+IMAGES_DIR = os.getenv("FATMEE_IMAGES_DIR", "")
+
+# Look used when the user names none: photo (realistic), illustration,
+# 3d, isometric or graphic. Empty = the AI picks per topic.
+IMAGE_DEFAULT_STYLE = os.getenv("FATMEE_IMAGE_DEFAULT_STYLE", "photo")
+
+# Credit guard: at most this many images per question, even if the
+# plan asks for more.
+MAX_IMAGES_PER_TASK = int(os.getenv("FATMEE_MAX_IMAGES_PER_TASK", "2"))
+
+# Characters of earlier results the image agent may read.
+IMAGE_INPUT_CHARS = int(os.getenv("FATMEE_IMAGE_INPUT_CHARS", "8000"))

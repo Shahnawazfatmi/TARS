@@ -10,8 +10,9 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 import config
-from agents import document, research, thinker
+import agents
 from graph import build_graph, new_task_id, run
+from image_gen import ImageGenerator
 from llm import LLM, LLMError
 from mcp_client import MCPManager, set_manager
 from memory import (
@@ -47,10 +48,11 @@ mcp.connect()
 set_manager(mcp)
 register_mcp_tools(mcp, mcp.servers)
 
-# Agents share the same LLM (OpenAI first, Gemini as fallback).
-research.configure(llm)
-thinker.configure(llm)
-document.configure(llm)
+# Image models: OpenAI first, Gemini as fallback (see FATMEE_IMAGE_PROVIDERS)
+images = ImageGenerator.from_config()
+
+# Agents share the same LLM and image models.
+agents.configure(llm, images)
 
 # The request flow (plan -> run -> verify -> recover -> answer)
 # lives in graph.py as a LangGraph graph.

@@ -52,6 +52,19 @@ class FakeProvider:
 
 
 @pytest.fixture
+def docs_dir(tmp_path, monkeypatch):
+    """Save test documents and images in a temp folder, never on the real Desktop."""
+
+    import config
+    from agents import files
+
+    monkeypatch.setattr(config, "DOCUMENTS_DIR", str(tmp_path))
+    monkeypatch.setattr(config, "IMAGES_DIR", str(tmp_path))
+    monkeypatch.setattr(files, "allowed_roots", lambda: [tmp_path.resolve()])
+    return tmp_path
+
+
+@pytest.fixture
 def fake_llm(monkeypatch):
     """Replace the real providers with one scripted fake provider."""
 

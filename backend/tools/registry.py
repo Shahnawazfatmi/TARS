@@ -2,7 +2,8 @@ import inspect
 from dataclasses import dataclass, field
 from typing import Callable
 
-from agents import document, research, thinker
+import config
+from agents import document, image, research, thinker
 from tools import memory_tools as mt
 from tools import system_tools as st
 
@@ -23,6 +24,10 @@ class Tool:
     # True for tools that read the results of the steps they wait
     # for (think, create_document). The executor passes them in.
     takes_inputs: bool = False
+
+    # Most times this tool may run for one question (0 = no limit),
+    # e.g. paid images, or one LinkedIn post. Counted in code.
+    max_per_task: int = 0
 
     def spec(self) -> dict:
         """Description shown to the planner."""
@@ -172,6 +177,35 @@ TOOLS = [
         },
         takes_inputs=True,
     ),
+    Tool(
+        "create_image", image.create_image,
+        "Image agent: makes ONE picture sized for LinkedIn and saves it as "
+        "PNG. Can show the results of the steps in its depends_on (e.g. "
+        "research). Returns where the file was saved. Costs more than "
+        "other tools: use only when the user asks for an image.",
+        {
+            "description": "The user's picture idea in detail, if they gave "
+                           "one, e.g. 'a robot reading a newspaper, watercolor'",
+            "instruction": "What the picture is for, e.g. 'an image for a "
+                           "LinkedIn post about this research'. Keep the user's "
+                           "own words; FATMEE picks the scene itself",
+            "shape": "'square' (normal post, default), 'landscape' (link or "
+                     "article post) or 'portrait' (tall post)",
+            "style": "Only if the user names one: 'photo', 'illustration', '3d', "
+                     "'isometric', 'graphic' or their own words (e.g. 'watercolor'). "
+                     "Leave out otherwise",
+            "text_in_image": "Exact words to show in the picture, only if the "
+                             "user asks for text. Leave out otherwise",
+            "file_name": "File name. Leave out unless the user names one",
+            "folder": "Only if the user names a place: 'desktop', 'pictures', "
+                      "'documents' or a folder in their home. Leave out "
+                      "otherwise (saves to Desktop/FATMEE Images)",
+            "open_after": "true only if the user asks to open the picture. "
+                          "Leave out otherwise",
+        },
+        takes_inputs=True,
+        max_per_task=config.MAX_IMAGES_PER_TASK,
+    ),
 ]
 
 
@@ -195,6 +229,14 @@ def takes_inputs(name: str | None) -> bool:
     tool = TOOLS_BY_NAME.get(name or "")
 
     return bool(tool and tool.takes_inputs)
+
+
+def max_per_task(name: str | None) -> int:
+    """Most times a tool may run for one question (0 = no limit)."""
+
+    tool = TOOLS_BY_NAME.get(name or "")
+
+    return tool.max_per_task if tool else 0
 
 
 def tool_specs() -> list:

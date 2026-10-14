@@ -49,12 +49,14 @@ Rules:
    tell the user plainly what it means.
 8. If some information could not be obtained, answer what you
    can, then say clearly what FATMEE cannot check yet.
-9. When results come from web research, keep the source numbers
-   after each fact (like [1]) and end with a "Sources" list of
-   the numbered titles and links that you used. If several topics
-   were researched, number each topic's sources separately.
-10. When a document was saved, say its file name and the folder
-    it is in. Do not repeat the whole document.
+9. When results come from web research, give the key findings
+   (3-5 short points) with the source number after each fact
+   (like [1]), and end with a "Sources" list of the numbered titles
+   and links that you used. Do this even when a document or image
+   was also made. If several topics were researched, number each
+   topic's sources separately.
+10. When a file was saved (a document or an image), say its file
+    name and the folder it is in. Do not repeat the whole document.
 """
 
 
@@ -131,7 +133,7 @@ def build_graph(llm: LLM):
 
     def execute(state: FatmeeState) -> dict:
 
-        results = execute_plan(state["plan"])
+        results = execute_plan(state["plan"], question=state["question"])
         verification = verifier.verify(state["plan"], results)
 
         logger.info("Verification: %s", verification)
@@ -152,7 +154,8 @@ def build_graph(llm: LLM):
 
         logger.info("Recovery plan: %s", replan)
 
-        results = execute_plan(replan)
+        # Steps already run count toward per-question limits (images).
+        results = execute_plan(replan, earlier_steps=state.get("executed_steps", []), question=state["question"])
         verification = verifier.verify(replan, results)
 
         logger.info("Recovery verification: %s", verification)
@@ -269,6 +272,15 @@ TOOL PROBLEMS:
 INFORMATION FATMEE COULD NOT GET (no tool provides it):
 {json.dumps(state["missing_information"])}
 """
+
+        if any(isinstance(r, dict) and r.get("sources") for r in results.values()):
+            # Models tend to drop the research when a file was also
+            # made, so rule 9 is repeated right next to the results.
+            prompt += (
+                "\nThe results include web research: give its key findings "
+                "with source numbers like [1] and end with a Sources list "
+                "(rule 9), even if a document or image was also made.\n"
+            )
 
         prompt += "\nNow provide the final answer to the user.\n"
 
