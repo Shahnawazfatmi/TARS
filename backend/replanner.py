@@ -1,5 +1,11 @@
-from google import genai
 import json
+import logging
+
+from llm import LLM
+from planner import PLAN_FORMAT_RULES, normalize_steps
+
+
+logger = logging.getLogger("fatmee.replanner")
 
 
 class Replanner:
@@ -8,8 +14,8 @@ class Replanner:
     cannot satisfy the user's goal.
     """
 
-    def __init__(self, client: genai.Client):
-        self.client = client
+    def __init__(self, llm: LLM):
+        self.llm = llm
 
     def create_replan(
         self,
@@ -18,7 +24,8 @@ class Replanner:
         tool_results: dict,
         verification: dict,
         goal_verification: dict,
-        available_tools: list
+        available_tools: list,
+        history: str = "",
     ) -> dict:
 
         replanner_prompt = f"""
@@ -30,23 +37,24 @@ the user's goal.
 Your job is to analyze what went wrong and create a new
 plan that attempts to complete the goal.
 
+{history}
 USER GOAL:
 {goal}
 
 PREVIOUS PLAN:
-{json.dumps(previous_plan, indent=2)}
+{json.dumps(previous_plan, separators=(",", ":"))}
 
 TOOL RESULTS:
-{json.dumps(tool_results, indent=2)}
+{json.dumps(tool_results, separators=(",", ":"), default=str)}
 
 EXECUTION VERIFICATION:
-{json.dumps(verification, indent=2)}
+{json.dumps(verification, separators=(",", ":"))}
 
 GOAL VERIFICATION:
-{json.dumps(goal_verification, indent=2)}
+{json.dumps(goal_verification, separators=(",", ":"))}
 
-AVAILABLE TOOLS:
-{json.dumps(available_tools, indent=2)}
+AVAILABLE TOOLS (name, description, optional parameters):
+{json.dumps(available_tools, indent=1)}
 
 RULES:
 - Identify what went wrong.
@@ -56,6 +64,13 @@ RULES:
 - Do not invent tools.
 - Create the minimum number of new steps required.
 - The new plan should attempt to satisfy the original goal.
+{PLAN_FORMAT_RULES.format(prefix="r")}
+- Only add a step if its tool can actually provide the missing
+  information. If no available tool can, return an empty "steps"
+  list and say so in "reason". Never add unrelated tools.
+- If a tool error is itself the answer (e.g. "Folder not found"
+  when the user asked about that folder), return an empty "steps"
+  list.
 - Do not answer the user's question.
 - Only create executable steps.
 
@@ -65,36 +80,29 @@ Return ONLY valid JSON:
     "reason": "short explanation of why replanning is needed",
     "steps": [
         {{
+            "id": "r1",
             "step": 1,
             "action": "short description",
-            "tool": "tool_name_or_null"
+            "tool": "tool_name_or_null",
+            "args": {{}},
+            "depends_on": []
         }}
     ]
 }}
 """
 
-        response = self.client.interactions.create(
-            model="gemini-3.6-flash",
-            input=replanner_prompt,
-        )
-
-        print("\nRAW REPLANNER RESPONSE:")
-        print(response.output_text)
-
         try:
-            text = response.output_text.strip()
+            result = self.llm.json(replanner_prompt, component="replanner")
 
-            if text.startswith("```json"):
-                text = text[7:]
-
-            if text.endswith("```"):
-                text = text[:-3]
-
-            return json.loads(text.strip())
-
-        except (json.JSONDecodeError, TypeError):
+        except ValueError:
+            logger.warning("Replanner returned invalid JSON.")
 
             return {
                 "reason": "Replanning failed because the model returned invalid JSON.",
                 "steps": []
             }
+
+        return {
+            "reason": str(result.get("reason", "")),
+            "steps": normalize_steps(result.get("steps"), id_prefix="r"),
+        }

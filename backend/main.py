@@ -1,42 +1,126 @@
-from fastapi import FastAPI
-from pydantic import BaseModel
-from google import genai
-from dotenv import load_dotenv
+import logging
+import re
+import time
+from datetime import datetime
 
-from planner import Planner
-from replanner import Replanner
-from tools.registry import tool_registry
-from verifier import Verifier
-from goal_verifier import GoalVerifier
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Query, Request
+from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field
 
-import os
-import json
+import config
+from agents import document, research, thinker
+from graph import build_graph, new_task_id, run
+from llm import LLM, LLMError
+from mcp_client import MCPManager, set_manager
+from memory import (
+    EPISODE_STATUSES,
+    ConversationStore,
+    format_history,
+    get_episode_store,
+    resolve_period,
+)
+from tools.registry import register_mcp_tools, tool_specs
 
 
 # ============================================================
 # CONFIGURATION
 # ============================================================
 
-load_dotenv()
+logging.basicConfig(
+    level=config.LOG_LEVEL,
+    format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",
+)
+
+logger = logging.getLogger("fatmee")
 
 app = FastAPI(title="FATMEE")
 
-client = genai.Client(
-    api_key=os.getenv("GOOGLE_API_KEY")
-)
+# OpenAI first, Gemini as fallback (see FATMEE_LLM_PROVIDERS)
+llm = LLM.from_config()
 
-planner = Planner(client)
-replanner = Replanner(client)
-verifier = Verifier()
-goal_verifier = GoalVerifier(client)
+# MCP servers (mcp_servers.json): web search now; LinkedIn, Gmail and
+# GitHub later. A server without its API key is skipped, not fatal.
+mcp = MCPManager.from_file()
+mcp.connect()
+set_manager(mcp)
+register_mcp_tools(mcp, mcp.servers)
+
+# Agents share the same LLM (OpenAI first, Gemini as fallback).
+research.configure(llm)
+thinker.configure(llm)
+document.configure(llm)
+
+# The request flow (plan -> run -> verify -> recover -> answer)
+# lives in graph.py as a LangGraph graph.
+fatmee = build_graph(llm)
+
+# Working memory: the conversation so far, in a local SQLite file.
+conversations = ConversationStore()
+
+# Episodic memory: FATMEE's diary of every task, in the same file.
+episodes = get_episode_store()
+
+
+# ============================================================
+# ERRORS
+# ============================================================
+
+@app.exception_handler(LLMError)
+def llm_error_handler(request: Request, exc: LLMError):
+
+    return JSONResponse(
+        status_code=503,
+        content={
+            "response": (
+                "FATMEE could not reach any AI model (OpenAI or "
+                "Gemini). Check your internet connection and API "
+                "keys, then try again."
+            ),
+            "error": str(exc),
+        },
+    )
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_error_handler(request: Request, exc: RequestValidationError):
+    """Log why a request was rejected, then return the normal 422."""
+
+    reasons = "; ".join(
+        f"{'.'.join(str(p) for p in err.get('loc', []))}: {err.get('msg')}"
+        for err in exc.errors()
+    )
+
+    body = (await request.body()).decode("utf-8", errors="replace")
+
+    logger.warning(
+        "Rejected %s %s (422): %s | body: %r",
+        request.method,
+        request.url.path,
+        reasons,
+        body[:300],
+    )
+
+    return await request_validation_exception_handler(request, exc)
 
 
 # ============================================================
 # REQUEST MODEL
 # ============================================================
 
+SESSION_PATTERN = r"^[A-Za-z0-9_-]{1,64}$"
+
+SESSION_ID = Field(
+    default="default",
+    pattern=SESSION_PATTERN,
+    description="Conversation to continue. Leave as 'default' for one ongoing conversation.",
+)
+
+
 class Question(BaseModel):
-    question: str
+    question: str = Field(min_length=1, max_length=4000)
+    session_id: str = SESSION_ID
 
 
 # ============================================================
@@ -51,431 +135,161 @@ def home():
     }
 
 
+@app.get("/tools")
+def list_tools():
+    """Tools FATMEE can use."""
+
+    return tool_specs()
+
+
+@app.get("/mcp")
+def mcp_status():
+    """Which MCP servers are connected, skipped (missing key) or failing."""
+
+    return mcp.status
+
+
 # ============================================================
 # ASK
 # ============================================================
 
+def _save_quietly(save, *args, **kwargs) -> None:
+    """Run a memory write; log a failure instead of breaking the reply."""
+
+    try:
+        save(*args, **kwargs)
+
+    except Exception:
+        logger.exception("Could not save to memory")
+
+
 @app.post("/ask")
-def ask(data: Question):
+def ask(data: Question, background: BackgroundTasks):
 
-    # ========================================================
-    # TOOLS AVAILABLE TO FATMEE
-    # ========================================================
+    task_id = new_task_id()
+    started_at = datetime.now()
+    clock = time.perf_counter()
 
-    tools = [
+    history = format_history(conversations.recent(data.session_id))
 
-        {
-            "type": "function",
-            "name": "get_system_info",
-            "description": (
-                "Get basic information about the user's computer, "
-                "such as operating system, version, and architecture."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {},
-            },
-        },
+    try:
+        reply, details = run(fatmee, data.question, history, task_id=task_id)
 
-        {
-            "type": "function",
-            "name": "get_current_directory",
-            "description": (
-                "Get the current working directory of FATMEE."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {},
-            },
-        },
+    except Exception as e:
+        # Failed tasks go in the diary too, so "what failed today?"
+        # works. The conversation keeps only answered questions.
+        _save_quietly(
+            episodes.add,
+            task_id=task_id,
+            session_id=data.session_id,
+            started_at=started_at,
+            question=data.question,
+            status="failed",
+            duration_s=time.perf_counter() - clock,
+            problems=[str(e)[:300]],
+        )
+        raise
 
-        {
-            "type": "function",
-            "name": "list_files",
-            "description": (
-                "List files and folders inside the current working directory."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {},
-            },
-        },
+    duration = time.perf_counter() - clock
 
-        {
-            "type": "function",
-            "name": "get_cpu_usage",
-            "description": (
-                "Get the current CPU usage percentage."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {},
-            },
-        },
-
-        {
-            "type": "function",
-            "name": "get_ram_usage",
-            "description": (
-                "Get current RAM usage including total, used, "
-                "available memory and usage percentage."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {},
-            },
-        },
-
-        {
-            "type": "function",
-            "name": "get_disk_usage",
-            "description": (
-                "Get disk usage including total, used and free space."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {},
-            },
-        },
-
-        {
-            "type": "function",
-            "name": "get_hardware_info",
-            "description": (
-                "Get computer hardware information including CPU, "
-                "CPU cores, RAM, GPU and system architecture."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {},
-            },
-        },
-    ]
-
-
-    # ========================================================
-    # 1. CREATE INITIAL PLAN
-    # ========================================================
-
-    plan = planner.create_plan(
+    # Memory is written after the reply has been sent, so saving
+    # never adds to the user's wait.
+    background.add_task(
+        _save_quietly,
+        conversations.add_exchange,
+        data.session_id,
         data.question,
-        [tool["name"] for tool in tools]
+        reply["response"],
+        task_id=task_id,
+        meta={"tools_used": reply.get("tools_used", [])},
     )
 
-    print("\nPLAN:")
-    print(plan)
-
-
-    # ========================================================
-    # 2. EXTRACT TOOLS FROM PLAN
-    # ========================================================
-
-    planned_tools = [
-        step["tool"]
-        for step in plan.get("steps", [])
-        if step.get("tool")
-    ]
-
-    print("\nPLANNED TOOLS:")
-    print(planned_tools)
-
-
-    # ========================================================
-    # 3. EXECUTE INITIAL PLAN
-    # ========================================================
-
-    tool_results = {}
-
-    for tool_name in planned_tools:
-
-        if tool_name not in tool_registry:
-            print(f"WARNING: Tool not found: {tool_name}")
-            continue
-
-        try:
-
-            result = tool_registry[tool_name]()
-
-            tool_results[tool_name] = result
-
-            print(f"\nEXECUTED: {tool_name}")
-            print(result)
-
-        except Exception as e:
-
-            tool_results[tool_name] = {
-                "error": str(e)
-            }
-
-            print(f"\nERROR executing {tool_name}: {e}")
-
-
-    # ========================================================
-    # 4. VERIFY TOOL EXECUTION
-    # ========================================================
-
-    verification = verifier.verify(
-        plan,
-        tool_results
+    background.add_task(
+        _save_quietly,
+        episodes.add,
+        task_id=task_id,
+        session_id=data.session_id,
+        started_at=started_at,
+        question=data.question,
+        status="partial" if reply.get("missing_information") else "answered",
+        duration_s=duration,
+        goal=details["goal"],
+        tools=details["tools"],
+        summary=reply["response"],
+        problems=details["problems"],
     )
 
-    print("\nVERIFICATION:")
-    print(verification)
+    return {**reply, "session_id": data.session_id}
 
 
-    # ========================================================
-    # 4A. REPLAN IF TOOL EXECUTION FAILED
-    # ========================================================
+# ============================================================
+# SESSIONS (working memory)
+# ============================================================
 
-    if not verification["verified"]:
+def _check_session_id(session_id: str) -> None:
 
-        print("\nREPLANNING...")
-
-        replan = replanner.create_replan(
-            goal=data.question,
-            previous_plan=plan,
-            tool_results=tool_results,
-            verification=verification,
-            goal_verification={},
-            available_tools=[tool["name"] for tool in tools]
-        )
-
-        print("\nREPLAN:")
-        print(replan)
-
-        replan_results = {}
-
-        for step in replan.get("steps", []):
-
-            tool_name = step.get("tool")
-
-            if not tool_name:
-                continue
-
-            if tool_name not in tool_registry:
-                continue
-
-            try:
-
-                result = tool_registry[tool_name]()
-
-                replan_results[tool_name] = result
-
-                print(f"\nREPLANNED TOOL EXECUTED: {tool_name}")
-                print(result)
-
-            except Exception as e:
-
-                replan_results[tool_name] = {
-                    "error": str(e)
-                }
-
-        replan_verification = verifier.verify(
-            replan,
-            replan_results
-        )
-
-        print("\nREPLAN VERIFICATION:")
-        print(replan_verification)
-
-        if not replan_verification["verified"]:
-
-            return {
-                "response": (
-                    "FATMEE could not complete the task "
-                    "after replanning."
-                ),
-                "verification": replan_verification
-            }
-
-        # Add successful recovery results
-        tool_results.update(replan_results)
+    if not re.match(SESSION_PATTERN, session_id):
+        raise HTTPException(status_code=422, detail="Invalid session id.")
 
 
-    # ========================================================
-    # 5. VERIFY USER GOAL
-    # ========================================================
+@app.get("/sessions/{session_id}")
+def get_session(session_id: str):
+    """The full conversation of one session."""
 
-    goal_verification = goal_verifier.verify(
-        data.question,
-        plan,
-        tool_results
+    _check_session_id(session_id)
+
+    messages = conversations.messages(session_id)
+
+    return {"session_id": session_id, "count": len(messages), "messages": messages}
+
+
+@app.delete("/sessions/{session_id}")
+def clear_session(session_id: str):
+    """Forget a conversation and start fresh."""
+
+    _check_session_id(session_id)
+
+    deleted = conversations.clear(session_id)
+
+    logger.info("Cleared session %s (%d messages)", session_id, deleted)
+
+    return {"session_id": session_id, "deleted_messages": deleted}
+
+
+# ============================================================
+# EPISODES (episodic memory)
+# ============================================================
+
+@app.get("/episodes")
+def list_episodes(
+    day: str = Query("", description="today, yesterday, a weekday, or YYYY-MM-DD"),
+    days_back: int = Query(0, ge=0, le=3650, description="Tasks from the last N days"),
+    keyword: str = Query("", max_length=200),
+    status: str = Query("", description="answered, partial, failed or waiting_approval"),
+    session_id: str = Query("", max_length=64),
+    limit: int = Query(20, ge=1, le=200),
+):
+    """FATMEE's diary of past tasks, newest first."""
+
+    if status and status not in EPISODE_STATUSES:
+        raise HTTPException(status_code=422, detail=f"status must be one of {EPISODE_STATUSES}")
+
+    if session_id:
+        _check_session_id(session_id)
+
+    try:
+        start, end, label = resolve_period(day, days_back)
+
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+    entries, total = episodes.search(
+        start=start,
+        end=end,
+        keyword=keyword,
+        status=status,
+        session_id=session_id,
+        limit=limit,
     )
 
-    print("\nGOAL VERIFICATION:")
-    print(goal_verification)
-
-
-    # ========================================================
-    # 5A. REPLAN IF USER GOAL IS NOT SATISFIED
-    # ========================================================
-
-    if not goal_verification["goal_satisfied"]:
-
-        print("\nGOAL NOT SATISFIED - REPLANNING...")
-
-        replan = replanner.create_replan(
-            goal=data.question,
-            previous_plan=plan,
-            tool_results=tool_results,
-            verification=verification,
-            goal_verification=goal_verification,
-            available_tools=[tool["name"] for tool in tools]
-        )
-
-        print("\nGOAL RECOVERY PLAN:")
-        print(replan)
-
-        replan_results = {}
-
-        for step in replan.get("steps", []):
-
-            tool_name = step.get("tool")
-
-            if not tool_name:
-                continue
-
-            if tool_name not in tool_registry:
-                print(f"WARNING: Recovery tool not found: {tool_name}")
-                continue
-
-            try:
-
-                result = tool_registry[tool_name]()
-
-                replan_results[tool_name] = result
-
-                print(f"\nRECOVERY TOOL EXECUTED: {tool_name}")
-                print(result)
-
-            except Exception as e:
-
-                replan_results[tool_name] = {
-                    "error": str(e)
-                }
-
-                print(f"\nERROR executing recovery tool: {e}")
-
-
-        # ----------------------------------------------------
-        # VERIFY RECOVERY TOOL EXECUTION
-        # ----------------------------------------------------
-
-        replan_verification = verifier.verify(
-            replan,
-            replan_results
-        )
-
-        print("\nRECOVERY VERIFICATION:")
-        print(replan_verification)
-
-
-        if not replan_verification["verified"]:
-
-            return {
-                "response": (
-                    "FATMEE could not complete the task "
-                    "after recovery."
-                ),
-                "verification": replan_verification,
-                "goal_verification": goal_verification
-            }
-
-
-        # ----------------------------------------------------
-        # ADD RECOVERY RESULTS
-        # ----------------------------------------------------
-
-        tool_results.update(replan_results)
-
-
-        # ----------------------------------------------------
-        # VERIFY USER GOAL AGAIN
-        # ----------------------------------------------------
-
-        goal_verification = goal_verifier.verify(
-            data.question,
-            plan,
-            tool_results
-        )
-
-        print("\nGOAL VERIFICATION AFTER REPLANNING:")
-        print(goal_verification)
-
-
-        if not goal_verification["goal_satisfied"]:
-
-            return {
-                "response": (
-                    "FATMEE still does not have enough "
-                    "information to complete the task."
-                ),
-                "verification": replan_verification,
-                "goal_verification": goal_verification
-            }
-
-
-    # ========================================================
-    # 6. CONVERSATIONAL / KNOWLEDGE QUESTION
-    # ========================================================
-
-    if not tool_results:
-
-        interaction = client.interactions.create(
-            model="gemini-3.6-flash",
-            input=data.question,
-        )
-
-        return {
-            "response": interaction.output_text
-        }
-
-
-    # ========================================================
-    # 7. ANALYZE TOOL RESULTS WITH GEMINI
-    # ========================================================
-
-    system_instruction = """
-You are FATMEE, a desktop AI assistant.
-
-Answer the user's question using the provided tool results.
-
-Rules:
-
-1. Use the tool results for computer-related information.
-2. Do not invent computer specifications.
-3. Do not make unsupported performance claims.
-4. If the available information is insufficient, say so.
-5. Keep the answer concise and useful.
-6. Explain the result naturally instead of dumping raw JSON.
-"""
-
-
-    analysis_prompt = f"""
-USER QUESTION:
-{data.question}
-
-PLANNED EXECUTION:
-{json.dumps(plan, indent=2)}
-
-TOOL RESULTS:
-{json.dumps(tool_results, indent=2)}
-
-Now provide the final answer to the user.
-"""
-
-
-    interaction = client.interactions.create(
-        model="gemini-3.6-flash",
-        system_instruction=system_instruction,
-        input=analysis_prompt,
-    )
-
-
-    # ========================================================
-    # 8. FINAL RESPONSE
-    # ========================================================
-
-    return {
-        "response": interaction.output_text
-    }
+    return {"period": label, "found": total, "shown": len(entries), "episodes": entries}

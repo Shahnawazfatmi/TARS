@@ -1,0 +1,15 @@
+{
+  "_help": "MCP servers FATMEE connects to at startup. ${NAME} is replaced with that value from backend/.env. A server whose required_env is missing is skipped (FATMEE still starts). 'expose' lists tool names (or parts of names) the planner may call directly; 'approval' lists tools that must wait for the user's OK.",
+
+  "tavily": {
+    "description": "Web search and page reading by Tavily (remote, nothing installed locally).",
+    "transport": "streamable_http",
+    "url": "https://mcp.tavily.com/mcp/",
+    "headers": {
+      "Authorization": "Bearer ${TAVILY_API_KEY}"
+    },
+    "required_env": ["TAVILY_API_KEY"],
+    "expose": ["extract"],
+    "approval": []
+  }
+}

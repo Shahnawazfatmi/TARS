@@ -1,3 +1,6 @@
+from executor import result_keys, tool_steps
+
+
 class Verifier:
     """
     Verifies whether planned tool execution produced valid results.
@@ -5,19 +8,12 @@ class Verifier:
 
     def verify(self, plan: dict, tool_results: dict) -> dict:
 
-        planned_tools = [
-            step["tool"]
-            for step in plan.get("steps", [])
-            if step.get("tool")
-        ]
+        expected = result_keys(tool_steps(plan))
 
         errors = []
-        missing_tools = []
 
         # Check whether every planned tool executed
-        for tool in planned_tools:
-            if tool not in tool_results:
-                missing_tools.append(tool)
+        missing_tools = [key for key in expected if key not in tool_results]
 
         if missing_tools:
             errors.append(

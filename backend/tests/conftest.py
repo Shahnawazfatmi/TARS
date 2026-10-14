@@ -1,0 +1,65 @@
+import os
+import sys
+import tempfile
+from pathlib import Path
+
+import pytest
+
+# Run tests without real keys and without touching the network.
+os.environ.setdefault("OPENAI_API_KEY", "test-key")
+os.environ.setdefault("GEMINI_API_KEY", "test-key")
+
+# Never touch the real conversation file (backend/data/fatmee.db).
+# Forced, not setdefault: a real FATMEE_DB_PATH must not leak in.
+_TEST_DB_DIR = tempfile.mkdtemp(prefix="fatmee-tests-")
+os.environ["FATMEE_DB_PATH"] = os.path.join(_TEST_DB_DIR, "test.db")
+
+# Never connect to real MCP servers (Tavily etc.): tests stay offline
+# and free even when real keys are in .env. MCP tests use their own
+# fake server instead.
+_EMPTY_MCP_CONFIG = os.path.join(_TEST_DB_DIR, "mcp_servers.json")
+
+with open(_EMPTY_MCP_CONFIG, "w", encoding="utf-8") as _f:
+    _f.write("{}")
+
+os.environ["FATMEE_MCP_CONFIG"] = _EMPTY_MCP_CONFIG
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+
+class FakeProvider:
+    """Answers each FATMEE component with a scripted reply."""
+
+    def __init__(self, replies, name="fake", model="fake-model"):
+        self.replies = replies
+        self.name = name
+        self.model = model
+        self.calls = []
+
+    def generate(self, prompt, system, json_mode):
+        self.calls.append({"prompt": prompt, "system": system, "json_mode": json_mode})
+
+        for marker, reply in self.replies.items():
+            if marker in prompt:
+                value = reply.pop(0) if isinstance(reply, list) else reply
+
+                if isinstance(value, Exception):
+                    raise value
+
+                return value
+
+        return "Final answer from fake model."
+
+
+@pytest.fixture
+def fake_llm(monkeypatch):
+    """Replace the real providers with one scripted fake provider."""
+
+    import main
+
+    def install(replies):
+        fake = FakeProvider(replies)
+        monkeypatch.setattr(main.llm, "providers", [fake])
+        return fake
+
+    return install

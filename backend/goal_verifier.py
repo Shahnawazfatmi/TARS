@@ -1,5 +1,22 @@
-from google import genai
 import json
+import logging
+
+from llm import LLM
+
+
+logger = logging.getLogger("fatmee.goal_verifier")
+
+
+def _as_bool(value) -> bool:
+    """Read true/false safely; the string "false" must not count as True."""
+
+    if isinstance(value, bool):
+        return value
+
+    if isinstance(value, str):
+        return value.strip().lower() in ("true", "yes", "1")
+
+    return bool(value)
 
 
 class GoalVerifier:
@@ -9,18 +26,19 @@ class GoalVerifier:
 
     The LLM evaluates the goal dynamically based on:
     - User goal
-    - Execution plan
+    - Executed steps
     - Available tool results
     """
 
-    def __init__(self, client: genai.Client):
-        self.client = client
+    def __init__(self, llm: LLM):
+        self.llm = llm
 
     def verify(
         self,
         goal: str,
         plan: dict,
-        tool_results: dict
+        tool_results: dict,
+        history: str = "",
     ) -> dict:
 
         # ====================================================
@@ -48,14 +66,15 @@ You are the Goal Verification component of FATMEE.
 Your job is to determine whether the user's goal can be
 properly answered using the information currently available.
 
+{history}
 USER GOAL:
 {goal}
 
-EXECUTION PLAN:
-{json.dumps(plan, indent=2)}
+EXECUTED STEPS:
+{json.dumps(plan.get("steps", []), separators=(",", ":"))}
 
 AVAILABLE TOOL RESULTS:
-{json.dumps(tool_results, indent=2)}
+{json.dumps(tool_results, separators=(",", ":"), default=str)}
 
 RULES:
 
@@ -81,6 +100,10 @@ RULES:
 8. Do not decide to execute tools yourself.
    Your job is only to verify the goal.
 
+9. A negative result is a complete answer. If a tool shows that
+   something does not exist, is not installed, is not connected,
+   or has zero matches, the goal IS satisfied: the answer is "no".
+
 Return ONLY valid JSON:
 
 {{
@@ -90,52 +113,14 @@ Return ONLY valid JSON:
 }}
 """
 
-        # ====================================================
-        # CALL LLM
-        # ====================================================
-
-        response = self.client.interactions.create(
-            model="gemini-3.6-flash",
-            input=verification_prompt,
-        )
-
-        print("\nRAW GOAL VERIFIER RESPONSE:")
-        print(response.output_text)
-
-        # ====================================================
-        # PARSE RESPONSE
-        # ====================================================
-
         try:
-
-            text = response.output_text.strip()
-
-            if text.startswith("```json"):
-                text = text[7:]
-
-            if text.endswith("```"):
-                text = text[:-3]
-
-            result = json.loads(text.strip())
-
-            # Basic validation
-            if not isinstance(result, dict):
-                raise ValueError("Goal verifier did not return an object.")
+            result = self.llm.json(verification_prompt, component="goal_verifier")
 
             if "goal_satisfied" not in result:
-                raise ValueError(
-                    "Goal verifier response missing goal_satisfied."
-                )
+                raise ValueError("Goal verifier response missing goal_satisfied.")
 
-            if "reason" not in result:
-                result["reason"] = ""
-
-            if "missing_information" not in result:
-                result["missing_information"] = []
-
-            return result
-
-        except (json.JSONDecodeError, TypeError, ValueError):
+        except ValueError as e:
+            logger.warning("Goal verifier returned invalid output: %s", e)
 
             return {
                 "goal_satisfied": False,
@@ -146,4 +131,15 @@ Return ONLY valid JSON:
                 "missing_information": [
                     "valid goal verification result"
                 ]
-            } 
+            }
+
+        missing = result.get("missing_information") or []
+
+        if not isinstance(missing, list):
+            missing = [str(missing)]
+
+        return {
+            "goal_satisfied": _as_bool(result["goal_satisfied"]),
+            "reason": str(result.get("reason", "")),
+            "missing_information": missing,
+        }
