@@ -1,10 +1,12 @@
 import inspect
+import json
 from dataclasses import dataclass, field
 from typing import Callable
 
 import config
-from agents import document, image, research, thinker
+from agents import document, image, research, thinker, writer
 from tools import memory_tools as mt
+from tools import practice_tools as pt
 from tools import system_tools as st
 
 
@@ -182,7 +184,8 @@ TOOLS = [
         "Image agent: makes ONE picture sized for LinkedIn and saves it as "
         "PNG. Can show the results of the steps in its depends_on (e.g. "
         "research). Returns where the file was saved. Costs more than "
-        "other tools: use only when the user asks for an image.",
+        "other tools: use only when the user asks for an image or for a "
+        "LinkedIn post, and make only ONE create_image step per question.",
         {
             "description": "The user's picture idea in detail, if they gave "
                            "one, e.g. 'a robot reading a newspaper, watercolor'",
@@ -205,6 +208,33 @@ TOOLS = [
         },
         takes_inputs=True,
         max_per_task=config.MAX_IMAGES_PER_TASK,
+    ),
+    Tool(
+        "write_post", writer.write_post,
+        "Post writer agent: writes ONE LinkedIn post (plain text, a strong "
+        "first line, short paragraphs, 3-5 hashtags, up to two source links) "
+        "from the results of the steps in its depends_on. Returns the post "
+        "as \"text\". It does not publish anything.",
+        {
+            "instruction": "What the post should say or do, e.g. 'share the "
+                           "most surprising finding with my network'",
+            "include_sources": "false to leave out source links. Default true",
+        },
+        takes_inputs=True,
+    ),
+    Tool(
+        "practice_post", pt.practice_post,
+        "PRACTICE ONLY: rehearses publishing a post. FATMEE pauses and asks "
+        "the user to approve; then it saves the post text (and image path) "
+        "in a text file on the Desktop. Nothing is published. Use only when "
+        "the user asks for a practice post or to test approval.",
+        {
+            "text": "The full post text, e.g. '$s2' from a think step that wrote it",
+            "title": "Short name for the file. Default: the first words",
+            "image_path": "Path of an image for the post, e.g. '$s3.path'. Optional",
+        },
+        needs_approval=True,
+        max_per_task=1,
     ),
 ]
 
@@ -237,6 +267,14 @@ def max_per_task(name: str | None) -> int:
     tool = TOOLS_BY_NAME.get(name or "")
 
     return tool.max_per_task if tool else 0
+
+
+def tool_parameters(name: str | None) -> list:
+    """Names of a tool's inputs (empty for an unknown tool)."""
+
+    tool = TOOLS_BY_NAME.get(name or "")
+
+    return list(tool.parameters) if tool else []
 
 
 def tool_specs() -> list:
@@ -286,7 +324,18 @@ def register_mcp_tools(manager, servers: dict) -> list:
         }
 
         def call(_name=name, **kwargs):
-            return manager.call(_name, kwargs)
+            text = manager.call(_name, kwargs)
+
+            # A server that answers with a JSON object gets a dict back,
+            # so later steps can use its fields ("$s4.post_url").
+            try:
+                value = json.loads(text)
+            except (TypeError, ValueError):
+                return text
+
+            return value if isinstance(value, dict) else text
+
+        limits = {normalize_name(k): int(v) for k, v in (spec.get("max_per_task") or {}).items()}
 
         register_tool(Tool(
             name,
@@ -294,6 +343,7 @@ def register_mcp_tools(manager, servers: dict) -> list:
             (tool.description or name).strip().split("\n")[0][:300],
             parameters,
             needs_approval=any(normalize_name(p) in name for p in spec.get("approval", [])),
+            max_per_task=next((v for k, v in limits.items() if k in name), 0),
         ))
 
         added.append(name)

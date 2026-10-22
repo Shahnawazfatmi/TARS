@@ -9,8 +9,10 @@ _PROVIDERS. Nothing else in FATMEE needs to change.
 
 import base64
 import logging
+import time
 
 import config
+import task_logger
 
 
 logger = logging.getLogger("fatmee.image_gen")
@@ -42,8 +44,9 @@ class OpenAIImageProvider:
     def __init__(self, api_key: str, model: str, quality: str):
         from openai import OpenAI
 
-        # One retry only: image calls cost more than text calls.
-        self.client = OpenAI(api_key=api_key, max_retries=1)
+        # No automatic retry: a retry after a timeout could pay for the
+        # same picture twice. The Gemini backup is tried only on failure.
+        self.client = OpenAI(api_key=api_key, max_retries=0)
         self.model = model
         self.quality = quality
 
@@ -171,6 +174,8 @@ class ImageGenerator:
 
         for provider in self.providers:
 
+            start = time.perf_counter()
+
             try:
                 data = provider.generate(prompt, shape)
 
@@ -180,11 +185,14 @@ class ImageGenerator:
                 if errors:
                     logger.info("Image made by fallback provider %s", provider.name)
 
+                task_logger.image_call(provider.name, provider.model, time.perf_counter() - start, True)
+
                 return data, f"{provider.name} ({provider.model})"
 
             except Exception as e:
                 logger.warning("%s image call failed: %s", provider.name, e)
                 errors.append(f"{provider.name}: {e}")
+                task_logger.image_call(provider.name, provider.model, time.perf_counter() - start, False, str(e))
 
         if not errors:
             raise ImageError("No image model is set up. Add OPENAI_API_KEY or GEMINI_API_KEY.")

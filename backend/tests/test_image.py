@@ -78,9 +78,17 @@ def test_pick_style(asked, style):
 
 
 def test_style_is_added_in_code():
-    assert "editorial photograph" in image.final_prompt("A shop", "square", style="photo")
+    assert "Candid documentary photograph" in image.final_prompt("A shop", "square", style="photo")
     assert "Style: watercolor." in image.final_prompt("A shop", "square", style="watercolor")
     assert "Style" not in image.final_prompt("A shop", "square")
+
+
+@pytest.mark.parametrize("shape,words", [
+    ("square", "centred"), ("landscape", "whole heads"), ("portrait", "middle 80% of the width"),
+])
+def test_framing_survives_the_crop(shape, words):
+    # added in code, so the crop to the LinkedIn size never cuts off heads
+    assert words in image.final_prompt("A nurse", shape)
 
 
 def test_no_text_unless_asked():
@@ -124,10 +132,57 @@ def test_picture_from_earlier_results(fake_images):
     assert result["file_name"] == "Robots In Retail.png"
     assert result["description"].startswith("A friendly robot")
     assert "Robots help shops." in writer.calls[0]["prompt"]
-    assert model.calls[0]["prompt"].startswith("A friendly robot")
+    assert model.calls[0]["prompt"].startswith("Create this picture: A friendly robot")
     # the writer's style choice is used and added in code
     assert result["style"] == "photo" and result["concept"].startswith("A robot restocking")
-    assert "editorial photograph" in model.calls[0]["prompt"]
+    assert "Candid documentary photograph" in model.calls[0]["prompt"]
+
+
+RESEARCH = {
+    "topic": "JEV model by TypeSafe",
+    "summary": "JEV is a small type-safe model for structured decisions [1].",
+    "key_points": ["It returns typed JSON instead of free text [2].", "Used for routing support tickets [3]."],
+    "sources": [{"n": 1, "title": "T", "url": "https://typesafe.example/jev"}],
+    "searched_at": "2026-10-14T15:28",
+}
+
+
+def test_research_context_is_short_and_clean():
+    context = image.research_context({"s1": RESEARCH, "s2": {"error": "failed"}}, "Research JEV and make an image")
+
+    assert context.startswith("The user asked: Research JEV and make an image")
+    assert "Topic: JEV model by TypeSafe" in context
+    assert "- It returns typed JSON instead of free text." in context
+    # source numbers, links and failed steps are left out
+    assert "[1]" not in context and "https://" not in context and "failed" not in context
+
+
+def test_research_context_is_capped(monkeypatch):
+    monkeypatch.setattr(config, "IMAGE_CONTEXT_CHARS", 80)
+    context = image.research_context({"s1": {"summary": "word " * 100}})
+    assert len(context) <= 84 and context.endswith("...")
+
+
+def test_image_model_gets_picture_and_research_context(fake_images):
+    model, _ = fake_images
+    result = image.create_image(instruction="An image about this", inputs={"s1": RESEARCH},
+                                user_request="Research JEV and make a wide image")
+    prompt = model.calls[0]["prompt"]
+
+    # 1. the picture, 2. the fixed rules, 3. the research context, in that order
+    assert prompt.startswith("Create this picture: A friendly robot")
+    assert prompt.index("Do not include any text") < prompt.index("BACKGROUND CONTEXT")
+    assert "Topic: JEV model by TypeSafe" in prompt and "routing support tickets" in prompt
+    assert "Do not write any of it as text in the picture" in prompt
+    assert "https://" not in prompt
+    assert result["used_research_context"] is True
+
+
+def test_no_context_without_earlier_results(fake_images):
+    model, _ = fake_images
+    result = image.create_image(description="A lighthouse at dawn")
+    assert "BACKGROUND CONTEXT" not in model.calls[0]["prompt"]
+    assert result["used_research_context"] is False
 
 
 def test_writer_is_told_to_be_specific_and_skip_links(fake_images):
@@ -164,11 +219,11 @@ def test_realistic_photo_is_the_default(fake_images, monkeypatch):
 
     # a plain description gets the realistic photo look
     assert image.create_image(description="A nurse at a monitor")["style"] == "photo"
-    assert "Photorealistic" in model.calls[-1]["prompt"]
+    assert "Candid documentary" in model.calls[-1]["prompt"]
 
     # a description that already names a look is left alone
     result = image.create_image(description="A cartoon nurse at a monitor")
-    assert result["style"] == "" and "Photorealistic" not in model.calls[-1]["prompt"]
+    assert result["style"] == "" and "Candid documentary" not in model.calls[-1]["prompt"]
 
     # with no default, the writer picks the style
     monkeypatch.setattr(config, "IMAGE_DEFAULT_STYLE", "")
@@ -253,19 +308,33 @@ def _image_step(n, description):
     return {"id": f"s{n}", "tool": "create_image", "args": {"description": description}}
 
 
-def test_at_most_two_images_per_question(fake_images):
+def test_only_one_image_per_question(fake_images):
     model, _ = fake_images
-    results = execute_plan({"steps": [_image_step(1, "A cat"), _image_step(2, "A dog"), _image_step(3, "A bird")]})
+    results = execute_plan({"steps": [_image_step(1, "A cat"), _image_step(2, "A dog")]})
 
-    assert registry.max_per_task("create_image") == config.MAX_IMAGES_PER_TASK == 2
-    assert results["create_image"]["saved"] and results["create_image#2"]["saved"]
-    assert results["create_image#3"]["limit_reached"] and "at most 2 times" in results["create_image#3"]["error"]
-    assert len(model.calls) == 2
+    assert registry.max_per_task("create_image") == config.MAX_IMAGES_PER_TASK == 1
+    assert results["create_image"]["saved"]
+    assert results["create_image#2"]["limit_reached"] and "at most 1 time per" in results["create_image#2"]["error"]
+    # only one paid image call was made
+    assert len(model.calls) == 1
+
+
+def test_limit_can_be_raised(fake_images, monkeypatch):
+    monkeypatch.setitem(registry.TOOLS_BY_NAME, "create_image",
+                        registry.Tool("create_image", image.create_image, "x", takes_inputs=True, max_per_task=2))
+    results = execute_plan({"steps": [_image_step(1, "A cat"), _image_step(2, "A dog"), _image_step(3, "A bird")]})
+    assert results["create_image#2"]["saved"] and "at most 2 times" in results["create_image#3"]["error"]
+
+
+def test_openai_image_call_is_never_retried():
+    import image_gen
+    provider = image_gen.OpenAIImageProvider("test-key", "gpt-image-1-mini", "medium")
+    assert provider.client.max_retries == 0
 
 
 def test_recovery_cannot_get_around_the_limit(fake_images):
-    earlier = [_image_step(1, "A cat"), _image_step(2, "A dog")]
-    assert over_limit_steps([_image_step(3, "A bird")], earlier) == {"s3": 2}
+    earlier = [_image_step(1, "A cat")]
+    assert over_limit_steps([_image_step(3, "A bird")], earlier) == {"s3": 1}
 
     results = execute_plan({"steps": [_image_step(3, "A bird")]}, earlier_steps=earlier)
     assert results["create_image"]["limit_reached"]
@@ -319,3 +388,23 @@ def test_answer_keeps_research_when_an_image_is_made(fake_images, fake_llm, monk
     assert body["tools_used"] == ["research_topic", "create_image"]
     final = [c for c in fake.calls if c["system"] and "When a file was saved" in c["system"]][0]
     assert "The results include web research" in final["prompt"]
+
+
+def test_wide_crop_keeps_more_of_the_top():
+    # a 1536x1024 picture: red top half, blue bottom half
+    picture = Image.new("RGB", (1536, 1024), (0, 0, 255))
+    picture.paste((255, 0, 0), (0, 0, 1536, 512))
+    buffer = io.BytesIO()
+    picture.save(buffer, "PNG")
+
+    wide = image.fit_to_shape(buffer.getvalue(), "landscape")
+    red = sum(1 for y in range(wide.height) if wide.getpixel((600, y))[0] > 200)
+    # more of the top (red) half survives than the bottom (blue) half
+    assert red > wide.height / 2
+
+
+def test_screens_never_get_titles():
+    prompt = image.final_prompt("A nurse at a monitor", "landscape")
+    assert "no titles, headers, labels or captions" in prompt
+    # asking for text on purpose still works
+    assert "no titles" not in image.final_prompt("A poster", "square", "AI in Retail")

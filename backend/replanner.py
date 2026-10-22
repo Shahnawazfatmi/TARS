@@ -1,7 +1,8 @@
 import json
 import logging
 
-from llm import LLM
+from goal_verifier import settled_text
+from llm import LLM, LLMError
 from planner import PLAN_FORMAT_RULES, normalize_steps
 
 
@@ -46,7 +47,7 @@ PREVIOUS PLAN:
 
 TOOL RESULTS:
 {json.dumps(tool_results, separators=(",", ":"), default=str)}
-
+{settled_text(tool_results)}
 EXECUTION VERIFICATION:
 {json.dumps(verification, separators=(",", ":"))}
 
@@ -64,6 +65,12 @@ RULES:
 - Do not invent tools.
 - Create the minimum number of new steps required.
 - The new plan should attempt to satisfy the original goal.
+- Steps of the previous plan keep their ids and results. A new step
+  can use a result that worked ("$s1", "$s1.field", or "s1" in
+  depends_on) instead of running that step again.
+- Never redo a SETTLED step (the user rejected it, or it ran in dry
+  run): that outcome is the user's decision. If only settled steps
+  are "missing", return an empty "steps" list.
 {PLAN_FORMAT_RULES.format(prefix="r")}
 - Only add a step if its tool can actually provide the missing
   information. If no available tool can, return an empty "steps"
@@ -99,6 +106,16 @@ Return ONLY valid JSON:
 
             return {
                 "reason": "Replanning failed because the model returned invalid JSON.",
+                "steps": []
+            }
+
+        except LLMError as e:
+            # Tools may already have run (a post may be out): finish
+            # with what is known instead of failing the whole task.
+            logger.warning("Replanner could not reach an AI model: %s", e)
+
+            return {
+                "reason": "Replanning failed because no AI model could be reached.",
                 "steps": []
             }
 

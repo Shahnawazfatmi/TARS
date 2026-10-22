@@ -19,6 +19,32 @@ def _as_bool(value) -> bool:
     return bool(value)
 
 
+def settled_text(tool_results: dict) -> str:
+    """
+    Steps whose outcome is the user's decision, for the AI to read:
+    a step they rejected, or one that ran in dry run (test mode).
+    Empty when there are none, so other prompts stay unchanged.
+    """
+
+    lines = []
+
+    for name, result in tool_results.items():
+
+        if not isinstance(result, dict):
+            continue
+
+        if result.get("rejected"):
+            lines.append(f"- {name}: the user rejected this step. It was not done, by their choice.")
+
+        elif result.get("dry_run") is True:
+            lines.append(f"- {name}: ran in dry run (test mode) by the user's settings; nothing was published or sent.")
+
+    if not lines:
+        return ""
+
+    return "\nSETTLED STEPS (final, decided by the user; not failures):\n" + "\n".join(lines) + "\n"
+
+
 class GoalVerifier:
     """
     Verifies whether the available tool results are sufficient
@@ -75,7 +101,7 @@ EXECUTED STEPS:
 
 AVAILABLE TOOL RESULTS:
 {json.dumps(tool_results, separators=(",", ":"), default=str)}
-
+{settled_text(tool_results)}
 RULES:
 
 1. Understand what information is actually required to satisfy
@@ -103,6 +129,11 @@ RULES:
 9. A negative result is a complete answer. If a tool shows that
    something does not exist, is not installed, is not connected,
    or has zero matches, the goal IS satisfied: the answer is "no".
+
+10. A SETTLED step is finished as the user wanted: they rejected
+    it, or it ran in test mode (dry run) by their settings. Never
+    count it as missing and never ask to do it again. Judge the
+    goal only on everything else.
 
 Return ONLY valid JSON:
 

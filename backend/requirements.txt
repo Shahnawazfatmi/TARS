@@ -4,6 +4,7 @@ uvicorn==0.52.4
 openai==3.29.0
 google-genai==2.21.0
 langgraph==1.2.15
+langgraph-checkpoint-sqlite==3.1.2
 langchain-mcp-adapters==0.3.2
 mcp==1.30.0
 python-dotenv==1.2.3

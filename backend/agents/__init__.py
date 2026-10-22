@@ -10,9 +10,10 @@ Tool entry in tools/registry.py, and add it below if it has configure().
 def configure(llm, images=None) -> None:
     """Give every agent the shared services (called once at startup)."""
 
-    from agents import document, image, research, thinker
+    from agents import document, image, research, thinker, writer
 
     research.configure(llm)
     thinker.configure(llm)
     document.configure(llm)
     image.configure(llm, images)
+    writer.configure(llm)

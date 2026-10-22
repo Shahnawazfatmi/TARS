@@ -113,8 +113,10 @@ def test_approval_list_blocks_mcp_tool(manager, monkeypatch):
     registry.register_mcp_tools(manager, servers)
     assert registry.requires_approval("fake_extract")
 
-    results = execute_plan({"steps": [{"id": "s1", "tool": "fake_extract", "args": {"urls": ["https://a.com"]}}]})
-    assert results["fake_extract"]["needs_approval"] is True
+    from executor import run_plan
+    run = run_plan({"steps": [{"id": "s1", "tool": "fake_extract", "args": {"urls": ["https://a.com"]}}]})
+    # the MCP tool waits for the user's OK instead of running
+    assert run["pending"][0]["tool"] == "fake_extract" and run["results"] == {}
 
 
 # ---------------- research agent ----------------

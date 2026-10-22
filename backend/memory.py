@@ -333,6 +333,12 @@ class EpisodeStore(_SQLiteStore):
                 (task_id, question, goal, summary),
             )
 
+    def exists(self, task_id: str) -> bool:
+        """Is there already a diary entry for this task id?"""
+
+        with self._lock, self._connect() as conn:
+            return conn.execute("SELECT 1 FROM episodes WHERE task_id = ?", (task_id,)).fetchone() is not None
+
     def search(
         self,
         start: datetime | None = None,

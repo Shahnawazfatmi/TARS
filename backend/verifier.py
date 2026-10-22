@@ -28,6 +28,11 @@ class Verifier:
                     f"{tool_name} returned no result."
                 )
 
+            elif isinstance(result, dict) and result.get("rejected"):
+                # The user said no: that is a decision, not a failure
+                # to recover from.
+                continue
+
             elif isinstance(result, dict) and "error" in result:
                 errors.append(
                     f"{tool_name} failed: {result['error']}"

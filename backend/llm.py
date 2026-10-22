@@ -1,8 +1,10 @@
 import json
 import logging
 import re
+import time
 
 import config
+import task_logger
 
 
 logger = logging.getLogger("fatmee.llm")
@@ -48,9 +50,45 @@ def parse_json(text: str) -> dict:
     return result
 
 
+def usage_of(response) -> dict | None:
+    """
+    Token counts from a provider response, only as the provider
+    reported them (whole numbers). None when it reported nothing.
+    """
+
+    usage = getattr(response, "usage", None) or getattr(response, "usage_metadata", None)
+
+    if usage is None:
+        return None
+
+    def pick(*names):
+        for name in names:
+            value = usage.get(name) if isinstance(usage, dict) else getattr(usage, name, None)
+
+            if isinstance(value, int) and not isinstance(value, bool):
+                return value
+
+        return None
+
+    tokens_in = pick("input_tokens", "prompt_tokens", "total_input_tokens", "prompt_token_count")
+    tokens_out = pick("output_tokens", "completion_tokens", "total_output_tokens", "candidates_token_count")
+    total = pick("total_tokens", "total_token_count")
+
+    if tokens_in is None and tokens_out is None and total is None:
+        return None
+
+    if total is None and tokens_in is not None and tokens_out is not None:
+        total = tokens_in + tokens_out
+
+    return {"input_tokens": tokens_in, "output_tokens": tokens_out, "total_tokens": total}
+
+
 # ============================================================
 # PROVIDERS
 # ============================================================
+
+# A provider's generate() returns the text, or (text, usage) when the
+# response reports token counts (see usage_of).
 
 class OpenAIProvider:
     """OpenAI Responses API."""
@@ -78,7 +116,9 @@ class OpenAIProvider:
         if json_mode:
             kwargs["text"] = {"format": {"type": "json_object"}}
 
-        return self.client.responses.create(**kwargs).output_text
+        response = self.client.responses.create(**kwargs)
+
+        return response.output_text, usage_of(response)
 
 
 class GeminiProvider:
@@ -115,7 +155,9 @@ class GeminiProvider:
         if json_mode:
             kwargs["response_format"] = {"type": "text", "mime_type": "application/json"}
 
-        return self.client.interactions.create(**kwargs).output_text
+        response = self.client.interactions.create(**kwargs)
+
+        return response.output_text, usage_of(response)
 
 
 _PROVIDERS = {
@@ -177,14 +219,19 @@ class LLM:
     def from_config(cls) -> "LLM":
         return cls(build_providers())
 
-    def _generate(self, prompt: str, system: str | None = None, json_mode: bool = False) -> str:
+    def _generate(self, prompt: str, system: str | None = None, json_mode: bool = False,
+                  component: str | None = None) -> str:
 
         errors = []
 
         for provider in self.providers:
 
+            model = getattr(provider, "model", "")
+            start = time.perf_counter()
+
             try:
-                text = provider.generate(prompt, system, json_mode)
+                output = provider.generate(prompt, system, json_mode)
+                text, usage = output if isinstance(output, tuple) else (output, None)
 
                 if not text:
                     raise ValueError("empty response")
@@ -192,18 +239,21 @@ class LLM:
                 if errors:
                     logger.info("Answered by fallback provider %s", provider.name)
 
+                task_logger.llm_call(provider.name, model, component, time.perf_counter() - start, True, usage)
+
                 return text
 
             except Exception as e:
                 logger.warning("%s call failed: %s", provider.name, e)
                 errors.append(f"{provider.name}: {e}")
+                task_logger.llm_call(provider.name, model, component, time.perf_counter() - start, False, error=str(e))
 
         raise LLMError("All LLM providers failed. " + " | ".join(errors))
 
-    def text(self, prompt: str, system_instruction: str | None = None) -> str:
+    def text(self, prompt: str, system_instruction: str | None = None, component: str | None = None) -> str:
         """Return a plain-text answer."""
 
-        return self._generate(prompt, system_instruction)
+        return self._generate(prompt, system_instruction, component=component)
 
     def json(self, prompt: str, component: str = "llm") -> dict:
         """
@@ -213,7 +263,7 @@ class LLM:
         so each component can choose its own fallback.
         """
 
-        text = self._generate(prompt, json_mode=True)
+        text = self._generate(prompt, json_mode=True, component=component)
 
         logger.debug("RAW %s RESPONSE: %s", component.upper(), text)
 

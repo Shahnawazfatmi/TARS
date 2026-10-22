@@ -1,3 +1,4 @@
+import json
 import os
 
 from dotenv import load_dotenv
@@ -7,7 +8,10 @@ from dotenv import load_dotenv
 # ENVIRONMENT
 # ============================================================
 
-load_dotenv()
+# FATMEE's own local MCP servers (e.g. LinkedIn) get only the settings
+# listed in their "pass_env", so they must not read .env themselves.
+if os.getenv("FATMEE_NO_DOTENV") != "1":
+    load_dotenv()
 
 
 # ============================================================
@@ -70,6 +74,45 @@ LOG_LEVEL = os.getenv("FATMEE_LOG_LEVEL", "INFO").upper()
 DB_PATH = os.getenv(
     "FATMEE_DB_PATH",
     os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "fatmee.db"),
+)
+
+# Task logs (observability, not memory): one JSON line per finished
+# task in logs/tasks.jsonl. Ignored by git.
+TASK_LOG = os.getenv("FATMEE_TASK_LOG", "true").lower() != "false"
+
+TASK_LOG_DIR = os.getenv(
+    "FATMEE_TASK_LOG_DIR",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs"),
+)
+
+# Longest text kept per field (tool results, errors); the final answer
+# gets its own, larger limit. Longer values are cut and marked.
+TASK_LOG_MAX_CHARS = int(os.getenv("FATMEE_TASK_LOG_MAX_CHARS", "2000"))
+TASK_LOG_RESPONSE_CHARS = int(os.getenv("FATMEE_TASK_LOG_RESPONSE_CHARS", "8000"))
+
+
+def _prices() -> dict:
+    """
+    Optional prices for cost estimates, in USD per 1M tokens, e.g.
+    FATMEE_LLM_PRICES={"gpt-5.4-mini": {"input": 0.25, "output": 2.0}}.
+    Not set (the default): costs are logged as null, never guessed.
+    """
+
+    try:
+        prices = json.loads(os.getenv("FATMEE_LLM_PRICES", "") or "{}")
+    except ValueError:
+        return {}
+
+    return prices if isinstance(prices, dict) else {}
+
+
+LLM_PRICES = _prices()
+
+# Saved state of running and paused tasks (LangGraph checkpoints), so
+# a task waiting for approval survives a restart. Ignored by git.
+CHECKPOINT_DB_PATH = os.getenv(
+    "FATMEE_CHECKPOINT_DB_PATH",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "checkpoints.db"),
 )
 
 # How many recent messages (questions + answers) FATMEE reads
@@ -141,6 +184,9 @@ GEMINI_IMAGE_MODEL = os.getenv("FATMEE_GEMINI_IMAGE_MODEL", "gemini-2.5-flash-im
 # Seconds to wait for one image (images are slower than text).
 IMAGE_TIMEOUT = float(os.getenv("FATMEE_IMAGE_TIMEOUT", "120"))
 
+# Where practice posts are saved (approval testing). Empty = Desktop\FATMEE Practice Posts.
+PRACTICE_DIR = os.getenv("FATMEE_PRACTICE_DIR", "")
+
 # Where images are saved. Empty = Desktop\FATMEE Images.
 IMAGES_DIR = os.getenv("FATMEE_IMAGES_DIR", "")
 
@@ -150,7 +196,11 @@ IMAGE_DEFAULT_STYLE = os.getenv("FATMEE_IMAGE_DEFAULT_STYLE", "photo")
 
 # Credit guard: at most this many images per question, even if the
 # plan asks for more.
-MAX_IMAGES_PER_TASK = int(os.getenv("FATMEE_MAX_IMAGES_PER_TASK", "2"))
+MAX_IMAGES_PER_TASK = int(os.getenv("FATMEE_MAX_IMAGES_PER_TASK", "1"))
 
 # Characters of earlier results the image agent may read.
 IMAGE_INPUT_CHARS = int(os.getenv("FATMEE_IMAGE_INPUT_CHARS", "8000"))
+
+# Characters of research context sent to the image model itself, next
+# to the picture description, so the scene matches the real subject.
+IMAGE_CONTEXT_CHARS = int(os.getenv("FATMEE_IMAGE_CONTEXT_CHARS", "1500"))

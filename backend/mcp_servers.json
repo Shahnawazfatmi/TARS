@@ -1,5 +1,5 @@
 {
-  "_help": "MCP servers FATMEE connects to at startup. ${NAME} is replaced with that value from backend/.env. A server whose required_env is missing is skipped (FATMEE still starts). 'expose' lists tool names (or parts of names) the planner may call directly; 'approval' lists tools that must wait for the user's OK.",
+  "_help": "MCP servers FATMEE connects to at startup. ${NAME} is replaced with that value from backend/.env. A server whose required_env is missing is skipped (FATMEE still starts). 'expose' lists tool names (or parts of names) the planner may call directly; 'approval' lists tools that must wait for the user's OK; 'max_per_task' limits how often a tool runs per question; 'timeout' (seconds) gives a server's tools more time than FATMEE_MCP_TIMEOUT. For servers FATMEE starts itself (stdio): \"command\": \"python\" is FATMEE's own Python, relative paths start from this folder, and only the settings in 'pass_env' are given to the server process.",
 
   "tavily": {
     "description": "Web search and page reading by Tavily (remote, nothing installed locally).",
@@ -11,5 +11,29 @@
     "required_env": ["TAVILY_API_KEY"],
     "expose": ["extract"],
     "approval": []
+  },
+
+  "linkedin": {
+    "description": "FATMEE's own LinkedIn MCP server (official LinkedIn API, OAuth 2.0). Log in once at /linkedin/connect.",
+    "transport": "stdio",
+    "command": "python",
+    "args": ["local_mcp/linkedin_server.py"],
+    "cwd": ".",
+    "required_env": ["LINKEDIN_CLIENT_ID", "LINKEDIN_CLIENT_SECRET"],
+    "pass_env": [
+      "LINKEDIN_CLIENT_ID",
+      "LINKEDIN_CLIENT_SECRET",
+      "LINKEDIN_REDIRECT_URI",
+      "FATMEE_DB_PATH",
+      "FATMEE_LINKEDIN_TOKEN_PATH",
+      "FATMEE_LINKEDIN_DRY_RUN",
+      "FATMEE_LINKEDIN_VERSION",
+      "FATMEE_LINKEDIN_API_BASE",
+      "FATMEE_LINKEDIN_AUTH_BASE"
+    ],
+    "expose": ["linkedin_status", "linkedin_get_profile", "linkedin_create_post"],
+    "approval": ["create_post"],
+    "max_per_task": {"create_post": 1},
+    "timeout": 120
   }
 }

@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import re
+import sys
 import threading
 
 from langchain_mcp_adapters.client import MultiServerMCPClient
@@ -22,7 +23,7 @@ import config
 logger = logging.getLogger("fatmee.mcp")
 
 # Settings in mcp_servers.json that are FATMEE's, not the MCP library's.
-_FATMEE_KEYS = {"description", "required_env", "expose", "approval", "enabled"}
+_FATMEE_KEYS = {"description", "required_env", "expose", "approval", "enabled", "pass_env", "max_per_task", "timeout"}
 
 _ENV_PATTERN = re.compile(r"\$\{([A-Z0-9_]+)\}")
 
@@ -46,6 +47,44 @@ def _fill_env(value):
         return [_fill_env(v) for v in value]
 
     return value
+
+
+def _local_process(connection: dict, spec: dict, base_dir: str) -> dict:
+    """
+    For a server FATMEE starts itself (stdio):
+
+    - "command": "python" means the Python running FATMEE (the venv),
+    - relative script paths and "cwd" are relative to mcp_servers.json,
+    - "pass_env" lists the settings to hand to the server process. Only
+      those (and the few basic Windows variables the MCP library always
+      passes) reach it, so no other secret leaks into it.
+    """
+
+    if connection.get("transport") != "stdio":
+        return connection
+
+    connection = dict(connection)
+
+    if connection.get("command") == "python":
+        connection["command"] = sys.executable
+
+    connection["args"] = [
+        os.path.normpath(os.path.join(base_dir, arg))
+        if isinstance(arg, str) and arg.endswith(".py") and not os.path.isabs(arg)
+        else arg
+        for arg in connection.get("args", [])
+    ]
+
+    if connection.get("cwd") and not os.path.isabs(connection["cwd"]):
+        connection["cwd"] = os.path.normpath(os.path.join(base_dir, connection["cwd"]))
+
+    passed = {key: os.environ[key] for key in spec.get("pass_env", []) if key in os.environ}
+
+    # FATMEE_NO_DOTENV: the server must not load backend/.env itself,
+    # which would give it every key, not just these.
+    connection["env"] = {**(connection.get("env") or {}), **passed, "FATMEE_NO_DOTENV": "1"}
+
+    return connection
 
 
 def result_text(result) -> str:
@@ -74,8 +113,10 @@ def result_text(result) -> str:
 class MCPManager:
     """Owns the MCP connections and the event loop they run on."""
 
-    def __init__(self, servers: dict):
+    def __init__(self, servers: dict, base_dir: str | None = None):
         self.servers = servers
+        # Folder that relative paths in the server settings start from.
+        self.base_dir = base_dir or os.path.dirname(os.path.abspath(__file__))
         self.tools = {}       # normalized name -> LangChain tool
         self.tool_server = {} # normalized name -> server name
         self.status = {}      # server name -> {"state": ..., ...}
@@ -102,7 +143,7 @@ class MCPManager:
 
         servers = {name: spec for name, spec in raw.items() if not name.startswith("_")}
 
-        return cls(servers)
+        return cls(servers, base_dir=os.path.dirname(os.path.abspath(path)))
 
     def _run(self, coroutine, timeout: float):
         future = asyncio.run_coroutine_threadsafe(coroutine, self._loop)
@@ -134,6 +175,7 @@ class MCPManager:
                 continue
 
             connection = _fill_env({k: v for k, v in spec.items() if k not in _FATMEE_KEYS})
+            connection = _local_process(connection, spec, self.base_dir)
 
             try:
                 client = MultiServerMCPClient({name: connection})
@@ -204,7 +246,19 @@ class MCPManager:
         # option this server version does not support).
         clean = {k: v for k, v in args.items() if not properties or k in properties}
 
-        result = self._run(tool.ainvoke(clean), timeout=timeout or config.MCP_TIMEOUT)
+        # A server can ask for more time ("timeout" in mcp_servers.json),
+        # e.g. publishing with an image upload.
+        server = self.servers.get(self.tool_server.get(normalize_name(name), ""), {})
+        timeout = timeout or server.get("timeout") or config.MCP_TIMEOUT
+
+        try:
+            result = self._run(tool.ainvoke(clean), timeout=timeout)
+
+        except TimeoutError:
+            raise TimeoutError(
+                f"{name} did not answer within {timeout:g} s. It may still have finished: "
+                "if it publishes or sends something, check before trying again."
+            ) from None
 
         return result_text(result)
 

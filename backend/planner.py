@@ -79,10 +79,27 @@ PLAN_FORMAT_RULES = """- Give every step an id: "{prefix}1", "{prefix}2", ...
 - For a Word document or report, use "create_document" and put the
   steps whose results go in it in its "depends_on". It writes the
   content itself, so do not add a think step to write it first.
+- Tools marked "needs_approval" pause and ask the user before they
+  run. Plan them normally, with everything they need ready in "args"
+  (e.g. "$s2" from a think step that wrote the text), so the user
+  sees the real content when asked.
 - For a picture, use "create_image" only when the user asks for an
-  image. Put the user's picture details in "description". If the
-  picture should show earlier results, list those steps in its
-  "depends_on". One create_image step makes one picture."""
+  image or for a LinkedIn post. Put the user's picture details in
+  "description". If the picture should show earlier results, list
+  those steps in its "depends_on". One create_image step makes one
+  picture.
+- For a LinkedIn post: research first if the topic needs facts, then
+  "write_post" and "create_image" (both depending on the research, so
+  they run at the same time; leave out the image only if the user says
+  no image), then publish with "linkedin_create_post": text
+  "$<write_post id>.text", image_path "$<create_image id>.path",
+  alt_text "$<create_image id>.concept". It waits for the user's
+  approval. If "linkedin_create_post" is not in the tool list, or the
+  user asks for a practice post, use "practice_post" the same way
+  (text, image_path).
+- Add the publishing step only when the user asks to post, publish or
+  share on LinkedIn. To "write" or "draft" a post, use write_post only
+  (and create_image if they want a picture)."""
 
 
 class Planner:

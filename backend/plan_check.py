@@ -10,19 +10,22 @@ class PlanError(ValueError):
     """The plan cannot be run as written (e.g. steps wait on each other)."""
 
 
-def check_plan(steps: list) -> tuple[list, list]:
+def check_plan(steps: list, known=()) -> tuple[list, list]:
     """
     Repair small mistakes in a plan and report what was changed.
 
     - A dependency written as a step number ("1") is mapped to that
       step's id ("s1").
     - Unknown dependencies and steps waiting on themselves are dropped.
+    - known: ids of steps that already ran for this question (e.g. the
+      first plan, for a recovery plan). Waiting on them is allowed.
 
     Returns (fixed_steps, warnings). Raises PlanError when steps wait
     on each other in a loop, since no order can satisfy that.
     """
 
-    ids = {step["id"] for step in steps}
+    own = {step["id"] for step in steps}
+    ids = own | set(known)
     by_number = {str(step.get("step")): step["id"] for step in steps}
 
     warnings = []
@@ -34,7 +37,7 @@ def check_plan(steps: list) -> tuple[list, list]:
         for dep in step.get("depends_on", []):
             dep = str(dep)
 
-            if dep not in ids and dep in by_number:
+            if dep not in own and dep in by_number:
                 dep = by_number[dep]
 
             if dep == step["id"]:
@@ -57,7 +60,7 @@ def check_plan(steps: list) -> tuple[list, list]:
         fixed.append({**step, "depends_on": deps})
 
     # Raises PlanError on a loop.
-    execution_waves(fixed)
+    execution_waves(fixed, known)
 
     for warning in warnings:
         logger.warning("Plan repaired: %s", warning)
@@ -65,17 +68,18 @@ def check_plan(steps: list) -> tuple[list, list]:
     return fixed, warnings
 
 
-def execution_waves(steps: list) -> list:
+def execution_waves(steps: list, known=()) -> list:
     """
     Group steps into waves that can run at the same time.
 
-    Wave 1 holds steps that wait for nothing; each later wave holds
-    steps whose dependencies all finished in earlier waves.
+    Wave 1 holds steps that wait for nothing (or only for known steps,
+    which already ran); each later wave holds steps whose dependencies
+    all finished in earlier waves.
     """
 
     # Dicts keep insertion order, so each wave keeps the planner's order.
     remaining = {step["id"]: step for step in steps}
-    done = set()
+    done = set(known)
     waves = []
 
     while remaining:

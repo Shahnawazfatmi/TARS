@@ -18,8 +18,9 @@ __pycache__/
 .DS_Store
 Thumbs.db
 
-# Logs
+# Logs (task logs hold your questions and tool results)
 *.log
+backend/logs/
 
 # Python cache/testing
 .pytest_cache/
@@ -30,10 +31,13 @@ build/
 dist/
 *.egg-info/
 
-# Local databases / vector stores
+# Local databases / vector stores (memory, diary, paused tasks)
 *.db
+*.db-wal
+*.db-shm
 *.sqlite
 *.sqlite3
+backend/data/
 
 # Temporary files
 *.tmp

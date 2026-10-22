@@ -47,10 +47,13 @@ _SHAPE_WORDS = {
 # Picture styles. The writer picks the one that suits the topic when
 # the user names none; the matching line is added to the prompt.
 STYLES = {
-    "photo": ("Photorealistic editorial photograph, as if shot by a professional "
-              "photographer: real people with natural skin texture, real materials "
-              "and devices, realistic proportions, natural light, shallow depth of "
-              "field, 35mm lens. Not an illustration, cartoon or CGI render."),
+    "photo": ("Candid documentary photograph taken on a full-frame camera, 35mm lens "
+              "at f/2, natural window light, true-to-life colors, subtle film grain. "
+              "Real people with natural skin texture, relaxed poses, not looking at "
+              "the camera. Real places with everyday clutter and small imperfections. "
+              "Screens are photographed at a slight angle with natural reflections, "
+              "their content soft and out of focus. Not an illustration, not CGI, "
+              "not a stock render, not a UI mockup."),
     "illustration": "Modern editorial illustration: rich textured colors, clear shapes, hand-crafted feel.",
     "3d": "Polished 3D render: soft studio lighting, tactile materials, gentle shadows.",
     "isometric": "Detailed isometric illustration: a miniature scene seen from above at an angle.",
@@ -63,6 +66,18 @@ _STYLE_WORDS = {
     "3d": ("3d", "3-d", "render", "3d render", "clay"),
     "isometric": ("isometric", "miniature"),
     "graphic": ("graphic", "bold", "poster", "minimal", "minimalist"),
+}
+
+# The model draws 1024x1024 / 1536x1024 / 1024x1536 and the code crops
+# to the LinkedIn size, so important things must sit where the crop
+# keeps them (1536x1024 -> 1200x627 cuts ~20% off the top and bottom).
+_FRAMING = {
+    "square": "Keep the main subject centred with a little space around it.",
+    "landscape": ("Wide banner framing: keep every important subject, including "
+                  "people's whole heads, inside the middle 70% of the height, with "
+                  "clear space above heads and below hands."),
+    "portrait": ("Tall framing: keep every important subject inside the middle 80% "
+                 "of the width, with space at the sides."),
 }
 
 # If a user's own description already names a look, the default style
@@ -134,6 +149,50 @@ def _about(inputs: dict) -> dict:
     }
 
 
+_CITATION = re.compile(r"\s*\[\d+\]")
+_URL = re.compile(r"https?://\S+")
+
+
+def research_context(inputs: dict, user_request: str = "") -> str:
+    """
+    A short plain-text brief of what the picture is about, for the image
+    model itself: the user's words, plus the topic, summary and key facts
+    of earlier results (research, think...). Source numbers and links
+    are removed. Capped at FATMEE_IMAGE_CONTEXT_CHARS.
+    """
+
+    lines = []
+
+    if user_request.strip():
+        lines.append(f"The user asked: {user_request.strip()}")
+
+    for result in (inputs or {}).values():
+
+        if not isinstance(result, dict) or result.get("error"):
+            continue
+
+        if result.get("topic"):
+            lines.append(f"Topic: {result['topic']}")
+
+        for key in ("summary", "output"):
+            if isinstance(result.get(key), str) and result[key].strip():
+                lines.append(result[key].strip())
+
+        points = result.get("key_points")
+
+        if isinstance(points, list) and points:
+            lines.append("Key facts:")
+            lines.extend(f"- {point}" for point in points if str(point).strip())
+
+    text = "\n".join(lines)
+    text = _URL.sub("", _CITATION.sub("", text)).strip()
+
+    if len(text) > config.IMAGE_CONTEXT_CHARS:
+        text = text[:config.IMAGE_CONTEXT_CHARS].rsplit(" ", 1)[0] + " ..."
+
+    return text
+
+
 def _default_folder() -> Path:
     if config.IMAGES_DIR:
         return Path(os.path.expanduser(config.IMAGES_DIR))
@@ -201,10 +260,15 @@ WHEN THE TOPIC IS ABOUT AI, THE AI IS THE HERO:
   in the background. Someone glancing at the picture must see "AI at
   work here", not just a normal office, shop or hospital.
 - Show AI the way it really looks today: a screen or tablet where an AI
-  assistant is visibly working (highlighted regions on a scan, a chat
-  bubble shape, a waveform, an agent avatar, items being sorted or
-  flagged, with no readable words), a robot or robotic arm, a smart
-  device with a status light, a camera system tracking items.
+  assistant is visibly working (highlighted regions on a medical scan,
+  items in a list being sorted or flagged with colors, a waveform), a
+  robot or robotic arm, a smart device with a status light, a camera
+  system tracking items. Screens show real-looking software, softly
+  out of focus, never a flat cartoon icon or a UI mockup.
+- Never use the words "dashboard", "title", "header", "label" or
+  "interface" in the description: image models then paint misspelled
+  words on the screen. Describe screen content only as shapes, colored
+  bars, highlighted areas and thumbnails.
 - For AI AGENTS, show the agent DOING a task by itself, with people
   supervising: e.g. a screen where an AI agent is working through a
   queue of patient files on its own while a nurse checks one result.
@@ -231,8 +295,10 @@ RULES:
   must read well as a small picture in a fast LinkedIn feed. Avoid
   very dark or murky scenes.
 - For the photo style, describe a believable real photograph: a real
-  place, real people, real devices that exist today. Nothing magical
-  or science-fiction.
+  place, real people, real devices that exist today, natural light,
+  everyday details. Nothing magical or science-fiction.
+- Frame it so the crop to {shape} keeps everything important: people's
+  whole heads and hands visible, with space around them.
 """
 
     result = _llm.json(prompt, component="image prompt")
@@ -245,10 +311,18 @@ RULES:
     }
 
 
-def final_prompt(description: str, shape: str, text_in_image: str = "", style: str = "") -> str:
-    """The description plus the style and FATMEE's fixed rules, added in code so they always apply."""
+def final_prompt(description: str, shape: str, text_in_image: str = "", style: str = "", context: str = "") -> str:
+    """
+    What the image model receives:
 
-    prompt = f"{description.strip().rstrip('.')}. Composition: {shape} format."
+    1. the picture to make (written by the AI writer, or the user's own),
+    2. FATMEE's fixed rules (shape, framing, style, no text), added in
+       code so they always apply,
+    3. the research context, so the scene shows the real subject.
+    """
+
+    prompt = f"Create this picture: {description.strip().rstrip('.')}."
+    prompt += f" Composition: {shape} format. {_FRAMING[shape]}"
 
     if style:
         prompt += f" {_style_line(style)}"
@@ -260,20 +334,43 @@ def final_prompt(description: str, shape: str, text_in_image: str = "", style: s
         )
 
     else:
-        prompt += " Do not include any text, letters, numbers, words, logos or watermarks."
+        prompt += (
+            " Do not include any text, letters, numbers, words, logos or watermarks."
+            " Any screen shows only shapes, colored bars, icons and blurred"
+            " thumbnails: no titles, headers, labels or captions."
+        )
+
+    if context:
+        prompt += (
+            "\n\nBACKGROUND CONTEXT (what this picture is about, from FATMEE's "
+            "research). Use it so the people, place, objects and activity "
+            "match the real subject. Do not write any of it as text in the "
+            "picture:\n" + context
+        )
 
     return prompt
 
 
 def fit_to_shape(data: bytes, shape: str):
-    """Crop from the centre and resize to the exact LinkedIn size."""
+    """
+    Crop and resize to the exact LinkedIn size.
+
+    When the top and bottom must be cut (wide banners), more is cut
+    from the bottom: heads are usually near the top, desks and floors
+    near the bottom.
+    """
 
     from PIL import Image, ImageOps
 
     with Image.open(io.BytesIO(data)) as picture:
         picture = picture.convert("RGB")
 
-    return ImageOps.fit(picture, SHAPES[shape]["size"], method=Image.Resampling.LANCZOS)
+    return ImageOps.fit(
+        picture,
+        SHAPES[shape]["size"],
+        method=Image.Resampling.LANCZOS,
+        centering=(0.5, 0.3),
+    )
 
 
 def create_image(
@@ -338,7 +435,15 @@ def create_image(
     # Shown in the log so you can see why a picture looks the way it does.
     logger.info("Image idea: %s | style: %s | %s", concept or "(your description)", style or "-", description[:300])
 
-    prompt = final_prompt(description, shape, text_in_image, style)
+    context = research_context(inputs or {}, user_request) if inputs else ""
+    prompt = final_prompt(description, shape, text_in_image, style, context)
+
+    logger.info(
+        "Image prompt sent: %d characters, %s",
+        len(prompt),
+        f"with research context ({len(context)} characters)" if context else "no research context",
+    )
+    logger.info("Full image prompt: %s", prompt.replace("\n", " | "))
 
     try:
         data, model = _images.generate(prompt, shape)
@@ -377,4 +482,5 @@ def create_image(
         "model": model,
         "concept": concept,
         "description": description,
+        "used_research_context": bool(context),
     }

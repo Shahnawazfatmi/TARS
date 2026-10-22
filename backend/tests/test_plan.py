@@ -104,6 +104,8 @@ def test_dependent_step_waits(timed_tools):
 
 
 def test_approval_tool_never_runs_without_approval(timed_tools):
-    results = execute_plan({"steps": [{"id": "s1", "tool": "send_mail"}]})
-    assert results["send_mail"]["needs_approval"] is True
+    from executor import run_plan
+    run = run_plan({"steps": [{"id": "s1", "tool": "send_mail"}]})
+    assert [p["step_id"] for p in run["pending"]] == ["s1"]
+    assert "send_mail" not in run["results"]
     assert timed_tools == []  # the tool body never ran

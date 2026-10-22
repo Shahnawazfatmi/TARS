@@ -13,6 +13,18 @@ os.environ.setdefault("GEMINI_API_KEY", "test-key")
 # Forced, not setdefault: a real FATMEE_DB_PATH must not leak in.
 _TEST_DB_DIR = tempfile.mkdtemp(prefix="fatmee-tests-")
 os.environ["FATMEE_DB_PATH"] = os.path.join(_TEST_DB_DIR, "test.db")
+os.environ["FATMEE_CHECKPOINT_DB_PATH"] = os.path.join(_TEST_DB_DIR, "checkpoints.db")
+
+# Never write test tasks into the real task log (backend/logs/).
+os.environ["FATMEE_TASK_LOG_DIR"] = os.path.join(_TEST_DB_DIR, "logs")
+
+# Never touch the real LinkedIn login or the real LinkedIn: a temp
+# token file, and API addresses that point nowhere (tests that need
+# LinkedIn start their own fake server and set these themselves).
+os.environ["FATMEE_LINKEDIN_TOKEN_PATH"] = os.path.join(_TEST_DB_DIR, "linkedin_token.bin")
+os.environ["FATMEE_LINKEDIN_API_BASE"] = "http://127.0.0.1:9"
+os.environ["FATMEE_LINKEDIN_AUTH_BASE"] = "http://127.0.0.1:9"
+os.environ["FATMEE_LINKEDIN_DRY_RUN"] = "true"
 
 # Never connect to real MCP servers (Tavily etc.): tests stay offline
 # and free even when real keys are in .env. MCP tests use their own
@@ -60,6 +72,7 @@ def docs_dir(tmp_path, monkeypatch):
 
     monkeypatch.setattr(config, "DOCUMENTS_DIR", str(tmp_path))
     monkeypatch.setattr(config, "IMAGES_DIR", str(tmp_path))
+    monkeypatch.setattr(config, "PRACTICE_DIR", str(tmp_path))
     monkeypatch.setattr(files, "allowed_roots", lambda: [tmp_path.resolve()])
     return tmp_path
 
