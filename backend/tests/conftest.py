@@ -9,11 +9,18 @@ import pytest
 os.environ.setdefault("OPENAI_API_KEY", "test-key")
 os.environ.setdefault("GEMINI_API_KEY", "test-key")
 
+# Never call the real local model server. Forced, not setdefault:
+# the real address in .env must not leak in.
+os.environ["FATMEE_LOCAL_LLM_URL"] = ""
+
 # Never touch the real conversation file (backend/data/fatmee.db).
 # Forced, not setdefault: a real FATMEE_DB_PATH must not leak in.
 _TEST_DB_DIR = tempfile.mkdtemp(prefix="fatmee-tests-")
 os.environ["FATMEE_DB_PATH"] = os.path.join(_TEST_DB_DIR, "test.db")
 os.environ["FATMEE_CHECKPOINT_DB_PATH"] = os.path.join(_TEST_DB_DIR, "checkpoints.db")
+
+# Never write the file reader's cache into backend/data/.
+os.environ["FATMEE_READ_CACHE_DIR"] = os.path.join(_TEST_DB_DIR, "read_cache")
 
 # Never write test tasks into the real task log (backend/logs/).
 os.environ["FATMEE_TASK_LOG_DIR"] = os.path.join(_TEST_DB_DIR, "logs")

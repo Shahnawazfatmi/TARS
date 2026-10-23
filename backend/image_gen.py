@@ -1,8 +1,8 @@
 """
 Image models for FATMEE, the way llm.py is for text.
 
-Tries each provider in order (OpenAI first, Gemini as backup by
-default) and returns the picture as bytes. To add a provider later:
+Tries each provider in order (Gemini by default; OpenAI when added
+to FATMEE_IMAGE_PROVIDERS) and returns the picture as bytes. To add a provider later:
 write one class with a generate(prompt, shape) method and add it to
 _PROVIDERS. Nothing else in FATMEE needs to change.
 """
@@ -195,6 +195,6 @@ class ImageGenerator:
                 task_logger.image_call(provider.name, provider.model, time.perf_counter() - start, False, str(e))
 
         if not errors:
-            raise ImageError("No image model is set up. Add OPENAI_API_KEY or GEMINI_API_KEY.")
+            raise ImageError("No image model is set up. Add GEMINI_API_KEY or OPENAI_API_KEY.")
 
         raise ImageError("All image providers failed. " + " | ".join(errors))

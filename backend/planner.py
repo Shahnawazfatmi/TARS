@@ -135,7 +135,16 @@ RULES:
 - Order steps logically.
 - Do not solve or answer the user's goal.
 - If the goal requires information from tools, create the necessary steps.
-- Only return an empty plan for genuinely conversational or knowledge questions.
+- Return an empty plan ("steps": []) when FATMEE can answer from its own
+  knowledge, with no tool: explanations, definitions, concepts, how-to,
+  advice, ideas, writing or rewriting text, math, code help and casual
+  chat. Example: "What is an LLM?" or "Explain RAG simply" needs no steps.
+- Use "research_topic" only when the answer depends on recent or
+  current information (news, "latest", "this week", prices, releases,
+  events, a company's or person's current details, statistics), or when
+  the user asks to search, research, look something up or give sources.
+- Questions about this computer still need the PC tools, and questions
+  about earlier tasks need "recall_tasks".
 {PLAN_FORMAT_RULES.format(prefix="s")}
 - Do not execute tools.
 

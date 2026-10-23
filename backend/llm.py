@@ -160,7 +160,48 @@ class GeminiProvider:
         return response.output_text, usage_of(response)
 
 
+class LocalProvider:
+    """Our own model server, via its OpenAI-style Chat Completions API."""
+
+    name = "local"
+
+    def __init__(self, base_url: str, model: str):
+        import httpx
+        from openai import OpenAI
+
+        # No retries and a short connect wait: if the server is off,
+        # fall back to the next provider in seconds, not minutes.
+        self.client = OpenAI(
+            base_url=base_url,
+            api_key=config.LOCAL_LLM_API_KEY,
+            max_retries=0,
+            timeout=httpx.Timeout(config.LOCAL_LLM_TIMEOUT, connect=5.0),
+        )
+        self.model = model
+
+    def generate(self, prompt: str, system: str | None, json_mode: bool) -> str:
+
+        messages = [{"role": "user", "content": prompt}]
+
+        if system:
+            messages.insert(0, {"role": "system", "content": system})
+
+        kwargs = {
+            "model": self.model,
+            "messages": messages,
+            "extra_body": {"chat_template_kwargs": {"enable_thinking": config.LOCAL_LLM_THINKING}},
+        }
+
+        if json_mode:
+            kwargs["response_format"] = {"type": "json_object"}
+
+        response = self.client.chat.completions.create(**kwargs)
+
+        return response.choices[0].message.content, usage_of(response)
+
+
 _PROVIDERS = {
+    "local": (LocalProvider, lambda: config.LOCAL_LLM_URL, lambda: config.LOCAL_LLM_MODEL),
     "openai": (OpenAIProvider, lambda: config.OPENAI_API_KEY, lambda: config.OPENAI_MODEL),
     "gemini": (GeminiProvider, lambda: config.GEMINI_API_KEY, lambda: config.GEMINI_MODEL),
 }
@@ -181,15 +222,15 @@ def build_providers() -> list:
         cls, key, model = entry
 
         if not key():
-            logger.info("Skipping %s: no API key set.", name)
+            logger.info("Skipping %s: not set up (no URL or API key).", name)
             continue
 
         providers.append(cls(key(), model()))
 
     if not providers:
         raise RuntimeError(
-            "No LLM API key found. Add OPENAI_API_KEY or GEMINI_API_KEY "
-            "to backend/.env (see backend/.env.example)."
+            "No AI model is set up. Add FATMEE_LOCAL_LLM_URL (or GEMINI_API_KEY "
+            "/ OPENAI_API_KEY) to backend/.env (see backend/.env.example)."
         )
 
     logger.info(
@@ -208,8 +249,8 @@ class LLM:
     """
     Single entry point for every model call in FATMEE.
 
-    Tries each provider in order (OpenAI first, then Gemini by
-    default) and falls back to the next one when a call fails.
+    Tries each provider in order (the local model first, then Gemini
+    by default) and falls back to the next one when a call fails.
     """
 
     def __init__(self, providers: list):

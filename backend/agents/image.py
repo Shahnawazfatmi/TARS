@@ -9,8 +9,8 @@ Image agent: makes a picture sized for LinkedIn and saves it as PNG.
    description was given), one small text AI call writes the
    picture description. A clear description from the user is used
    as it is, so no call is spent.
-2. One image AI call makes the picture (image_gen.py: OpenAI first,
-   Gemini as backup).
+2. One image AI call makes the picture (image_gen.py: Gemini by
+   default).
 3. The code crops it to the exact LinkedIn size and saves it with
    the shared rules in agents/files.py.
 
@@ -401,7 +401,7 @@ def create_image(
         return {"error": "The image agent needs a description of the picture."}
 
     if _images is None or not _images.providers:
-        return {"error": "Image making is not set up. Add OPENAI_API_KEY (or GEMINI_API_KEY) to backend/.env."}
+        return {"error": "Image making is not set up. Add GEMINI_API_KEY (or OPENAI_API_KEY) to backend/.env."}
 
     try:
         target = resolve_folder(folder)

@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from typing import Callable
 
 import config
-from agents import document, image, research, thinker, writer
+from agents import document, image, reader, research, thinker, writer
 from tools import memory_tools as mt
 from tools import practice_tools as pt
 from tools import system_tools as st
@@ -150,13 +150,43 @@ TOOLS = [
     Tool(
         "research_topic", research.research_topic,
         "Research agent: searches the web for current information on ONE "
-        "topic and returns key points with numbered source links. For "
-        "several topics, use one step per topic (they run at the same time).",
+        "topic and returns key points with numbered source links. Use it "
+        "for recent or current facts, or when the user asks to search; "
+        "general knowledge questions need no research. For several "
+        "topics, use one step per topic (they run at the same time).",
         {
             "topic": "What to research, e.g. 'AI agent trends October 2026'",
             "max_sources": "How many web results to use (1-10). Default 5",
             "time_range": "Only recent results: 'day', 'week', 'month' or 'year'",
         },
+    ),
+    Tool(
+        "read_file", reader.read_file,
+        "File reader agent: reads a file on the user's PC (PDF, Word .docx, "
+        "or text such as .txt, .md, .csv) and returns what kind of file it "
+        "is, a summary, key points with page numbers, and an answer to the "
+        "user's question about it. Long files are read in parts. Use it "
+        "whenever the user wants to know what a file says, or to "
+        "summarize, explain or answer from it. If the user names the "
+        "file, call it directly (no list_files needed).",
+        {
+            "path": "The file: a full path (e.g. from list_files), or "
+                    "'desktop/name.pdf', 'documents/...', 'downloads/...'. A "
+                    "bare file name is looked for on the Desktop, in Documents "
+                    "and in Downloads",
+            "question": "What the user wants to know from the file. Leave "
+                        "out for a general summary",
+            "pages": "Only these pages, e.g. '1-5' or '3, 7-9'. Leave out "
+                     "for the whole file",
+        },
+    ),
+    Tool(
+        "open_file", reader.open_file,
+        "Opens a file on the user's PC in its usual program (PDF viewer, "
+        "Word, Excel, photo viewer) so the user can see it. Use only when "
+        "the user asks to open or show a file. Documents, pictures and "
+        "media only, never programs.",
+        {"path": "The file, given the same way as for read_file"},
     ),
     Tool(
         "create_document", document.create_document,

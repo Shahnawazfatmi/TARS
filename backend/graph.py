@@ -29,6 +29,7 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command, interrupt
 
+import cards
 import config
 import task_logger
 from executor import execute_plan, run_plan
@@ -83,6 +84,18 @@ Rules:
     dry run (test mode) and nothing was published or sent, and give
     the result's note on how to switch it off. This is the expected
     outcome, not a failure.
+13. When a file was read, answer from it: give the answer to the
+    user's question (or the summary and key points), with page
+    numbers. If the result has a "note" (only part of a long file
+    was read) or a "warning", say so in one line.
+"""
+
+# Answers with no tool results: from the model's own knowledge.
+KNOWLEDGE_INSTRUCTION = """
+You are FATMEE, a desktop AI assistant. Answer from your own knowledge,
+clearly and concisely. If the answer depends on recent events or facts
+that may have changed since you learned them, say so in one short line
+and offer to search the web.
 """
 
 
@@ -447,7 +460,7 @@ def build_graph(llm: LLM, checkpointer=None):
             )
 
             return {"response": {
-                "response": llm.text(chat_prompt, component="answer"),
+                "response": llm.text(chat_prompt, system_instruction=KNOWLEDGE_INSTRUCTION, component="answer"),
                 "tools_used": [],
             }}
 
@@ -614,6 +627,7 @@ def _finish(app, task_id: str, state: dict) -> tuple:
             "approvals": pending,
             "tools_used": [name for name, r in results.items() if not failed(r)],
             "task_id": task_id,
+            "cards": cards.task_cards(results),
         }
 
         return reply, _details(state)
@@ -622,7 +636,10 @@ def _finish(app, task_id: str, state: dict) -> tuple:
     app.checkpointer.delete_thread(task_id)
     report("done", "Done")
 
-    reply = {**state["response"], "status": "done", "task_id": task_id}
+    reply = {
+        **state["response"], "status": "done", "task_id": task_id,
+        "cards": cards.task_cards(state.get("tool_results")),
+    }
     task_logger.get_task_log().finished(task_id, state, reply)
 
     return reply, _details(state)

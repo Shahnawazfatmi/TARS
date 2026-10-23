@@ -1,6 +1,6 @@
 # FATMEE
 
-Desktop AI assistant backend. An LLM planner (OpenAI first, Gemini as fallback) chooses system tools, FATMEE runs them in parallel, checks the results, replans if something is missing, and answers in plain language.
+Desktop AI assistant backend. An LLM planner (our own local model on the GB10 first, Gemini as fallback) chooses system tools, FATMEE runs them in parallel, checks the results, replans if something is missing, and answers in plain language.
 
 **New here? Read [docs/FATMEE_GUIDE.md](docs/FATMEE_GUIDE.md) first.** It explains every step and idea in simple English.
 
@@ -10,7 +10,7 @@ Desktop AI assistant backend. An LLM planner (OpenAI first, Gemini as fallback) 
 python -m venv .venv
 .venv\Scripts\Activate.ps1
 pip install -r requirements.txt
-copy backend\.env.example backend\.env   # then add OPENAI_API_KEY (and GEMINI_API_KEY for fallback)
+copy backend\.env.example backend\.env   # then set FATMEE_LOCAL_LLM_URL / _MODEL (and GEMINI_API_KEY for fallback and images)
 ```
 
 ## Run
@@ -20,13 +20,30 @@ cd backend
 ..\.venv\Scripts\python.exe -m uvicorn main:app --reload --timeout-graceful-shutdown 3
 ```
 
-Open http://127.0.0.1:8000/docs and try `POST /ask`:
+Open **http://127.0.0.1:8000/app/** for FATMEE's screen (chat, live steps, result cards, approval popup), or http://127.0.0.1:8000/docs and try `POST /ask`:
 
 ```json
 { "question": "Can my PC run a 7B local LLM?" }
 ```
 
 `GET /tools` lists every tool FATMEE can use.
+
+## The screen (`frontend/`)
+
+React + TypeScript (Vite). FATMEE serves the built version at `/app/`. Build it once after cloning or after changing it:
+
+```powershell
+cd frontend
+npm install
+npm run build
+```
+
+`npm run dev` serves it with instant reload at http://localhost:5173/app/ (it forwards `/api` to the backend on :8000).
+
+- Chat on the left; the **Mission control** panel on the right shows the plan and each step live (`/tasks/{id}/stream`).
+- Each finished step carries a **card** (`backend/cards.py`): research with sources, picture, Word document, post text, LinkedIn link.
+- Steps that need your OK open a popup with the exact post text and picture. **Approve** or **Reject**. The popup shows whether LinkedIn is **LIVE** or **DRY RUN** (a red "Approve and publish" button when LIVE).
+- `GET /status` feeds the Online light and the popup's LIVE/DRY RUN tag. `GET /files?path=` and `POST /files/open` show or open only files FATMEE made (its own output folders, or files made this run), only pictures, Word and text files.
 
 ## Conversation memory
 
@@ -64,7 +81,7 @@ Ask "Research the latest AI agent trends and make a Word report". The `create_do
 Ask "Make a square LinkedIn image about AI agents helping small shops". The `create_image` tool makes one picture, crops it to the exact LinkedIn size and saves a PNG in `Desktop\FATMEE Images\`.
 
 - Shapes: `square` 1200×1200 (default), `landscape` 1200×627, `portrait` 1080×1350.
-- Models: OpenAI `gpt-image-1-mini` first, Gemini `gemini-2.5-flash-image` as backup (`FATMEE_IMAGE_PROVIDERS`).
+- Model: Gemini `gemini-2.5-flash-image` (`FATMEE_IMAGE_PROVIDERS`). The local model can't make pictures. OpenAI `gpt-image-1-mini` can be added back with `FATMEE_IMAGE_PROVIDERS=gemini,openai`.
 - No text in the picture unless you ask for it. Only 1 image per question (`FATMEE_MAX_IMAGES_PER_TASK`), and a paid image call is never retried automatically.
 - Styles: `photo` (realistic, the default: `FATMEE_IMAGE_DEFAULT_STYLE`), `illustration`, `3d`, `isometric`, `graphic`, or your own word ("watercolor").
 - When the topic is AI, the AI is shown clearly at work (a screen, robot or device), and agents are shown doing tasks by themselves.
@@ -146,7 +163,7 @@ See "How FATMEE grows" in [docs/FATMEE_GUIDE.md](docs/FATMEE_GUIDE.md): a new to
 4. **Goal verifier** (LLM) checks the results answer the question; one more recovery try if not.
 5. The LLM writes the final answer from the tool results.
 
-Every model call goes through `backend/llm.py`: it tries OpenAI first and switches to Gemini automatically if OpenAI fails or returns nothing.
+Every model call goes through `backend/llm.py`: it tries the local model first (any OpenAI-style server: llama.cpp, vLLM, Ollama) and switches to Gemini automatically if it fails or returns nothing. Qwen-style "thinking" is switched off so answers aren't used up by it.
 
 ## Tools
 
@@ -172,6 +189,8 @@ Every model call goes through `backend/llm.py`: it tries OpenAI first and switch
 | `think(instruction)` | Works on earlier steps' results: compare, pick, summarize, write. Later steps use its answer as `$s2` |
 | `create_document(instruction, title, content, file_name, folder, open_after)` | Word report from earlier steps' results, saved on your PC |
 | `create_image(description, instruction, shape, style, text_in_image, file_name, folder, open_after)` | A LinkedIn-sized PNG, saved on your PC |
+| `read_file(path, question, pages)` | Reads a PDF, Word or text file on your PC: summary, key points with pages, answer to your question. Long files are read in parts; text is cached |
+| `open_file(path)` | Opens a document, picture or media file in its usual program (never programs) |
 | `write_post(instruction, include_sources)` | Writes one LinkedIn post (plain text, hook, hashtags, sources). Publishes nothing |
 | `linkedin_status` / `linkedin_get_profile` (via MCP) | Connected? as whom? until when? / your LinkedIn name, picture, email |
 | `linkedin_create_post(text, image_path, alt_text, visibility)` 🔒 (via MCP) | Publishes on your profile after your OK (dry run by default) |
@@ -182,12 +201,17 @@ Every model call goes through `backend/llm.py`: it tries OpenAI first and switch
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `OPENAI_API_KEY` | one key required | OpenAI API key (`OPEN_AI_API_KEY` also works) |
-| `GEMINI_API_KEY` | optional | Gemini API key, used as fallback |
-| `FATMEE_LLM_PROVIDERS` | `openai,gemini` | Order providers are tried in |
+| `FATMEE_LOCAL_LLM_URL` | none (skipped) | Local model server, e.g. `http://172.16.10.59:8080/v1` |
+| `FATMEE_LOCAL_LLM_MODEL` | `local` | Model id the server lists at `<url>/models` |
+| `FATMEE_LOCAL_LLM_API_KEY` | `not-needed` | Only if your server asks for one |
+| `FATMEE_LOCAL_LLM_THINKING` | `false` | `true` lets Qwen-style models think first (slower) |
+| `FATMEE_LOCAL_LLM_TIMEOUT` | `180` | Seconds per local model call (connecting gives up after 5 s) |
+| `GEMINI_API_KEY` | optional | Gemini API key: text fallback and images |
+| `OPENAI_API_KEY` | optional | Only used when `openai` is added to a provider list (`OPEN_AI_API_KEY` also works) |
+| `FATMEE_LLM_PROVIDERS` | `local,gemini` | Order providers are tried in (`local`, `gemini`, `openai`) |
 | `FATMEE_OPENAI_MODEL` | `gpt-5.4-mini` | OpenAI model |
 | `FATMEE_GEMINI_MODEL` | `gemini-3.6-flash` | Gemini fallback model |
-| `FATMEE_LLM_TIMEOUT` | `60` | Seconds per model call |
+| `FATMEE_LLM_TIMEOUT` | `60` | Seconds per cloud model call |
 | `FATMEE_GOAL_CHECK` | `true` | `false` skips the LLM goal check (one fewer call) |
 | `FATMEE_TOOL_WORKERS` | `8` | Parallel tool threads |
 | `FATMEE_LOG_LEVEL` | `INFO` | `DEBUG` also prints raw model output |
@@ -195,10 +219,10 @@ Every model call goes through `backend/llm.py`: it tries OpenAI first and switch
 | `FATMEE_HISTORY_MESSAGES` | `10` | Recent messages FATMEE reads before answering (10 = last 5 exchanges) |
 | `FATMEE_HISTORY_CHARS` | `1500` | Longer earlier answers are shortened to this for the model |
 | `FATMEE_DOCUMENTS_DIR` | `Desktop\FATMEE Reports` | Where Word documents are saved |
-| `FATMEE_IMAGE_PROVIDERS` | `openai,gemini` | Order image models are tried in |
+| `FATMEE_IMAGE_PROVIDERS` | `gemini` | Order image models are tried in (`gemini`, `openai`) |
 | `FATMEE_OPENAI_IMAGE_MODEL` | `gpt-image-1-mini` | OpenAI image model (`gpt-image-2` looks better, costs more) |
 | `FATMEE_OPENAI_IMAGE_QUALITY` | `medium` | `low`, `medium` or `high` |
-| `FATMEE_GEMINI_IMAGE_MODEL` | `gemini-2.5-flash-image` | Gemini backup image model |
+| `FATMEE_GEMINI_IMAGE_MODEL` | `gemini-2.5-flash-image` | Gemini image model |
 | `FATMEE_IMAGE_DEFAULT_STYLE` | `photo` | Look used when you name none (empty = the AI picks) |
 | `LINKEDIN_CLIENT_ID` / `LINKEDIN_CLIENT_SECRET` | none | From your LinkedIn app's Auth tab. Without them the LinkedIn server is skipped |
 | `LINKEDIN_REDIRECT_URI` | `http://127.0.0.1:8000/linkedin/callback` | Must match the app's Authorized redirect URL |

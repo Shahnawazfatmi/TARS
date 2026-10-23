@@ -65,7 +65,7 @@ Outside services (MCP): Tavily (web search), LinkedIn (FATMEE's own MCP server, 
 Live progress: every step is reported at /tasks/{task_id}/events (for the future screen)
 ```
 
-All AI calls go through `llm.py`: **OpenAI first, Gemini as a backup**.
+All AI calls go through `llm.py`: **our own local model first (on the GB10), Gemini as a backup**. Pictures come from Gemini. OpenAI is no longer used (since Step 13.6), but can be switched back on in `.env`.
 
 ---
 
@@ -670,6 +670,176 @@ A task can be `success` while `execution_success` is `false`. Example: "what's i
 
 ---
 
+### Step 13.6: Our own local AI model instead of OpenAI (22 Oct)
+
+**What:** FATMEE's text AI now runs on **our own server, the GB10**, instead of OpenAI. No API key, no credit used. Gemini is the backup if the GB10 is off.
+
+**Why:** OpenAI credit is limited. A local model is free to use as much as we like, and our questions stay inside the office network.
+
+**How we found the server:**
+1. The first address we got (`172.16.10.117`) didn't answer: no ping, and every port was closed.
+2. The right address is **`172.16.10.59`**. The server there answers on port `8080`.
+3. It runs **llama.cpp** with the model **Qwen 3.6 35B** (not Gemma). It can read about 32,000 tokens per call, which is enough for FATMEE.
+4. Its API looks like OpenAI's, so FATMEE talks to it with the same `openai` Python library, just pointed at the GB10.
+
+**One thing to know: "thinking" is switched off.**
+- Qwen models "think" out loud before they answer.
+- In our first test, the thinking used up the whole answer length, and the real answer came back **empty**.
+- With thinking off, the same question got a clean answer in **0.7 seconds**.
+- FATMEE switches it off on every call (`FATMEE_LOCAL_LLM_THINKING=false`, the default).
+
+**What changed:**
+- `llm.py` has one new class, **`LocalProvider`**. It's the only new code. The planner, agents and memory didn't change.
+- The new order is **local → Gemini**. OpenAI is no longer in the list.
+- Pictures: the local model **can't make pictures**, so images now use **Gemini only**.
+- **If the GB10 is off,** FATMEE gives up on it after 5 seconds (no retries) and asks Gemini. Before, Windows could wait about 21 seconds per call.
+- Local answers get up to 180 seconds (`FATMEE_LOCAL_LLM_TIMEOUT`), because the GB10 writes slower than OpenAI's cloud.
+
+**Your settings in `backend/.env`:**
+```
+FATMEE_LOCAL_LLM_URL=http://172.16.10.59:8080/v1
+FATMEE_LOCAL_LLM_MODEL=/home/gignaati/dbeaver/MODELS_LLAMA_CPP/models/qwen3.6-35b-a3b/Qwen3.6-35B-A3B-Q4_K_M.gguf
+```
+The model name is whatever the server lists at `http://172.16.10.59:8080/v1/models`. If someone loads a different model on the GB10, update this line.
+
+**To use OpenAI again** (no code change):
+```
+FATMEE_LLM_PROVIDERS=local,openai,gemini
+FATMEE_IMAGE_PROVIDERS=gemini,openai
+```
+
+**Tested:**
+- 4 new offline tests with a fake model server on this PC (nothing reaches the GB10). 239 in total, all passing.
+- **Live, on the GB10 (free):**
+  - One text call and one JSON plan call: correct, about 1.5 s each.
+  - The full question "How much RAM is my computer using right now?": plan, goal check and answer were **3 local calls, 0 OpenAI, 0 Gemini**, 13.5 s in total. The answer was correct (12.15 GB of 14.83 GB, 82%).
+
+**Not done yet:**
+- The image agent, research and LinkedIn post writer haven't been tried live on the local model yet. Your manual test should cover them.
+- A 35B local model is smarter than a small one, but it may still plan less well than OpenAI. If plans look worse, tell me and we'll compare.
+
+**Files:** `llm.py`, `config.py`, `main.py`, `image_gen.py`, `agents/image.py`, `.env.example`, `tests/conftest.py`, `tests/test_llm.py`
+
+**Update (23 Oct): images went back to OpenAI.** Gemini's free plan allows **0** images (the error says "limit: 0"; waiting doesn't help). Images now use OpenAI's cheapest model at the cheapest quality:
+```
+FATMEE_IMAGE_PROVIDERS=openai,gemini
+FATMEE_OPENAI_IMAGE_MODEL=gpt-image-1-mini
+FATMEE_OPENAI_IMAGE_QUALITY=low
+```
+`low` costs about 4 times less than `medium`. Square pictures are the cheapest size. Text still runs on Qwen.
+
+---
+
+### Step 14: The screen, frontend v1 (23 Oct)
+
+**What:** FATMEE has its own screen. You type a task, watch every step happen live, see the results (picture, document, post), and approve anything public with a button.
+
+**Why now:** you wanted to use FATMEE like a real app, not through `/docs`. The screen will grow with each new tool (memory, Gmail, voice).
+
+**Your choices:**
+- **A browser app now** (open http://127.0.0.1:8000/app/). The same code becomes a desktop window later (Step 19).
+- **Chat on the left, live "Mission control" panel on the right.**
+- **Dark look**: cyan means "FATMEE is working", yellow means "needs you", red only means "this goes public".
+- **Approval popup: Approve or Reject** (no editing).
+
+**What you see:**
+
+```
+┌ FATMEE │ Multi-agent AI coworker for your desktop ─────────────────────────── ● Online  [New chat] ┐
+│ Chat                                         │ ● Working                           1m 12s          │
+│                                              │ Plan ─ Run ─ Check ─ Answer                          │
+│ You: research agentic AI and post on         │ ✓ Web research              18.8s                    │
+│      LinkedIn with an image                  │ ⟳ Making the image…          9.2s                    │
+│                                              │ ✓ Post written               6.1s                    │
+│ FATMEE: …                                    │ ○ Posting on LinkedIn  Needs your OK                 │
+│                                              │ Results: [research] [image] [post]                   │
+│ [ Give FATMEE a task… ]  [Send]              │ ▸ Activity log                                       │
+└──────────────────────────────────────────────┴──────────────────────────────────────────────────────┘
+```
+
+1. **The header** shows FATMEE's name and tagline ("Multi-agent AI coworker for your desktop"), an **Online** light, and **New chat**. A new chat greets you as *your personal AI coworker, like TARS*. Model names are not shown (23 Oct, your request).
+2. **You send a task.** The panel shows the plan, then each step lights up while it runs (with a timer), turns green when done or red when it failed (with the reason).
+3. **Results appear as cards:** research with source links, the picture (click to see it full size), the Word document ("Open in Word" button), the post text, and after posting a "View on LinkedIn" link.
+4. **Before anything public, a popup appears** with the exact post text and picture. If LinkedIn is LIVE the button says **"Approve and publish"** in red.
+5. **After you decide,** the panel continues live, and the answer appears in the chat.
+6. **If you reload the page** while a task is waiting, the popup comes back.
+
+**How it works (the parts):**
+- `frontend/`: the screen (React + TypeScript, built with Vite). FATMEE serves the built version at `/app/`.
+- It uses the same API as before: `/ask`, `/tasks/{id}/stream` (live steps), `/approvals/{id}`, `/sessions/{id}`.
+- **New in the backend:**
+  - `cards.py`: turns each tool's result into a small **card** (picture, document, post, research…). Each finished step's live event carries its card, and the answer carries all of them. A new tool gets a card with one function.
+  - `GET /status`: the Online light, and whether LinkedIn is LIVE or DRY RUN for the popup. No secrets.
+  - `GET /files?path=…` and `POST /files/open`: show or open a file. **Only files FATMEE made** (this run, or in its own folders: FATMEE Images, Reports, Practice Posts). Only pictures, Word, text files. Anything else is refused.
+  - The chat history now keeps the cards, so pictures still show after a reload.
+
+**Found while building:**
+- **A blank page in Edge.** Newer Edge returns a "promise" from scrolling, and React treated it as a cleanup function and crashed. Fixed by writing those two effects as full blocks.
+- **The whole page scrolled away** with long chats. Now only the chat and the panel scroll; the header stays.
+- **Qwen's "think" step can refuse** when it has no earlier results to read. In a practice-post test it wrote "The results of earlier steps are not enough to do the job" as the post. The approval popup showed it before anything was saved, which is what approval is for. To fix later: tell the think step it may write from the instruction alone.
+
+**Tested:**
+- 8 new offline tests (247 in total, all passing): cards for every tool, broken results never break a task, only FATMEE's own files can be fetched or opened, `/status` has no secrets, and the whole screen flow: events → cards → pause → approve → done → history keeps the cards.
+- **Live on the GB10 (free, nothing published):** a practice post went plan → steps with cards → paused in 17 s → approved → done in 8 s, and the saved file previewed. Screenshots of the real page in Edge checked the header, chat, panel and popup.
+
+**Not done yet (next versions of the screen):**
+- Editing the post in the popup (you chose approve or reject only).
+- A list of past chats (now: one "New chat" button).
+- Live voice, settings, the desktop window.
+
+**Files:** `frontend/` (new), `backend/cards.py` (new), `executor.py`, `graph.py`, `main.py`, `tests/test_screen.py` (new)
+
+**Update (23 Oct): general questions no longer search the web.**
+- *Before:* "What is an LLM?" ran web research (30+ s, a Tavily credit), because the planner was told to use an empty plan only for "genuinely conversational" questions.
+- *Now:* the planner is told when to answer from its own knowledge (explanations, definitions, how-to, advice, writing, code, chat) and when to search (news, "latest", prices, current facts about a company or person, or when you say search or give sources). **The AI still decides each time.**
+- Answers without tools tell you in one line if the topic may have changed recently, and offer to search.
+- **Live on the GB10:** "What is an LLM?" → no tools, 8 s. "RAG vs fine-tuning" → no tools, 17 s. "Latest AI news this week" → web research, 41 s.
+- Files: `planner.py`, `tools/registry.py` (research description), `graph.py` (`KNOWLEDGE_INSTRUCTION`), `tests/test_knowledge.py` (3 tests, 250 in total)
+
+---
+
+### Step 14.2: Reading and opening your files (23 Oct)
+
+**What:** FATMEE can now **read** a file on your PC (PDF, Word, text), **summarize** it or **answer a question** about it with page numbers, and **open** it in its usual program.
+
+**Why:** before, FATMEE could only *see* files (`list_files` shows names and sizes). Asked about `tars_research.pdf`, it said "I cannot read the contents of this PDF".
+
+**Two new tools** (in `agents/reader.py`, one entry each in `tools/registry.py`):
+- `read_file(path, question, pages)`: reads and summarizes, or answers your question.
+- `open_file(path)`: opens it in your PDF viewer, Word, Excel or photo viewer. Documents, pictures and media only, **never programs** (.exe, .bat…).
+
+You can name a file the way you'd say it: a full path, `desktop/tars_research.pdf`, or just `tars_research.pdf` (looked for on the Desktop, in Documents and in Downloads). If the name is slightly wrong, it suggests the right one ("Did you mean: tars_research.pdf?").
+
+**How it reads, step by step:**
+1. **The code pulls the text out:** `pypdf` for PDF (page by page), `python-docx` for Word (with tables), plain reading for .txt/.md/.csv. This is fast: 1.3 s for your 33 MB, 44-page PDF.
+2. **Short file** (up to about 32,000 characters): **one** AI call writes the summary, key points with pages, and the answer.
+3. **Long file:** it is cut into **parts** of about 32,000 characters (about 8,000 tokens, which fits Qwen comfortably). Each part gets short notes with page numbers (one AI call each), then **one** call combines the notes into the answer. Your PDF: 5 parts + 1 = **6 calls**.
+4. **Very long file** (more than 8 parts): it reads the 8 parts that **best match your question** (or, with no question, a spread from start to end) and **tells you** it read only part ("read 120 of 300 pages… ask about a topic or give pages to read others"). You can also ask for pages: "read pages 40-60".
+
+**Reliable:**
+- One broken page or one failed part doesn't stop the file; the rest is still used.
+- Clear messages for: password-protected PDFs, damaged files, **scanned PDFs** ("no readable text… needs OCR"), mostly-scanned PDFs (a warning), empty files, files over 200 MB, unknown types, files open in another program.
+- Only files inside your own folders, the same safety rules as saving.
+
+**Scalable:**
+- **Cache:** the extracted text is saved in `backend/data/read_cache/` until the file changes, so a big file is read once. The same question on the same file comes back instantly.
+- Parts are read **2 at a time** (`FATMEE_READ_WORKERS`). Today the GB10 serves one request at a time, so they wait in line; if the GB10 runs llama.cpp with more slots (`-np 4`), long files get much faster with no code change.
+- Settings in `.env`: `FATMEE_READ_MAX_FILE_MB=200`, `FATMEE_READ_CHUNK_CHARS=32000`, `FATMEE_READ_MAX_PARTS=8`, `FATMEE_READ_WORKERS=2`.
+
+**On the screen:** the step shows "Reading the file…" with a timer. A **file card** shows the file name, "Read 44 of 44 pages", the summary or answer, key points, and an **Open** button.
+
+**Tested:**
+- 16 new offline tests (266 in total, all passing), with real small PDFs and Word files made in a temp folder: finding files by name, refusing other folders, suggestions, one-call short files, page choice, parts + combining, picking the parts that match the question, a failed part, scanned PDFs, Word tables, the cache (and re-reading after a change), unknown types, size limit, opening (never programs), the card, and the full API flow.
+- **Live on the GB10 (free), your real `tars_research.pdf`:**
+  - "Summarize what the paper is about" → read **44 of 44 pages**, 149 s, 9 AI calls, 0 failed. Correct: the paper is about **UI-TARS**, a GUI agent model (screenshots in, actions out) that beats GPT-4o and Claude on ScreenSpot, OSWorld and AndroidWorld.
+  - "What does it say about TARS's humor or honesty settings?" → 145 s. Honest answer: **there are none**; UI-TARS is only *named* after the Interstellar robot (p. 5). Reliability comes from reflection tuning and DPO (p. 12, 14, 21, 44).
+
+**Not done yet:** scanned PDFs (OCR), Excel/PowerPoint reading, and reusing one question's notes for the next question.
+
+**Files:** `agents/reader.py` (new), `tools/registry.py`, `agents/__init__.py`, `graph.py` (answer rule 13), `cards.py` (file card), `config.py` (`READ_*`), `requirements.txt` (`pypdf==5.4.0`), `frontend/src` (labels, file card), `tests/test_reader.py` (new)
+
+---
+
 ## 5. How FATMEE grows: adding things later
 
 FATMEE is built from **separate pieces that plug together**. Adding something new means adding one piece, without rewriting the others.
@@ -706,6 +876,7 @@ FATMEE is built from **separate pieces that plug together**. Adding something ne
 | **An agent that saves files** | Use `agents/files.py` for the folder, name and no-overwrite rules | The safety rules |
 | **A vector database** (for "remember people and facts", Step 14) | One more store class in `memory.py` (next to the conversation and the diary), plus one tool such as `recall_facts`. Options: `sqlite-vec` (stays in the same file) or Chroma / Qdrant if it grows | The planner, other memories |
 | **Voice or a chat screen** | A new "door" that calls the same `run()` | The brain and the tools |
+| **A card on the screen for a new tool** | One function in `cards.py` (`_BUILDERS`), and a label in `frontend/src/labels.tsx`. Without them the step still shows, with its tool name | The screen's layout |
 
 **Rule of thumb:** each piece only talks to the pieces next to it. The brain knows "tools", not Tavily or OpenAI. The agents know `llm` and `image_gen`, not which company is behind them. That's why we can swap or add parts safely.
 
@@ -715,7 +886,9 @@ FATMEE is built from **separate pieces that plug together**. Adding something ne
 
 | Word | Meaning |
 |---|---|
-| **LLM** | The AI model (OpenAI or Gemini) that understands and writes text |
+| **LLM** | The AI model (our local Qwen on the GB10, or Gemini) that understands and writes text |
+| **Local model** | An AI model running on our own computer (the GB10), not in a company's cloud. Free, no key |
+| **llama.cpp** | The program on the GB10 that runs the local model and answers like OpenAI's API |
 | **Tool** | One thing FATMEE can do, like read RAM or search the web |
 | **Agent** | A tool that uses the AI to do a bigger job (research, think) |
 | **Planner** | Decides which tools to use and in which order |
@@ -739,7 +912,7 @@ FATMEE is built from **separate pieces that plug together**. Adding something ne
 | **`.docx`** | A Word document file |
 | **Inputs** | Earlier steps' results that a think, document or image step reads |
 | **PNG** | A picture file |
-| **Provider** | The AI company behind a call (OpenAI, Gemini). FATMEE tries them in order |
+| **Provider** | Who answers an AI call (local GB10, Gemini, or OpenAI if switched on). FATMEE tries them in order |
 | **Vector database** | Memory that finds things by meaning, not exact words ("my boss" ≈ "my sir"). Planned for Step 14 |
 
 ---
@@ -757,7 +930,7 @@ FATMEE is built from **separate pieces that plug together**. Adding something ne
 | `verifier.py` | Checks tools worked |
 | `goal_verifier.py` | Checks the question is answered |
 | `replanner.py` | Plan B when something's missing |
-| `llm.py` | Talks to OpenAI / Gemini |
+| `llm.py` | Talks to the AI models: local GB10 first, then Gemini |
 | `memory.py` | Conversation + diary (SQLite) |
 | `mcp_client.py` | Connects to MCP servers |
 | `mcp_servers.json` | List of MCP servers |
@@ -765,6 +938,7 @@ FATMEE is built from **separate pieces that plug together**. Adding something ne
 | `agents/thinker.py` | Think step |
 | `agents/document.py` | Word documents |
 | `agents/image.py` | Pictures for LinkedIn |
+| `agents/reader.py` | Reads, summarizes and opens your files (PDF, Word, text) |
 | `agents/files.py` | Safe saving rules for every file an agent makes |
 | `progress.py` | Live progress events of each task |
 | `task_logger.py` | Task logs: one JSON line per finished task (`backend/logs/tasks.jsonl`) |
@@ -773,11 +947,13 @@ FATMEE is built from **separate pieces that plug together**. Adding something ne
 | `local_mcp/linkedin_server.py` | FATMEE's LinkedIn MCP server |
 | `agents/writer.py` | LinkedIn post writer |
 | `tools/practice_tools.py` | Practice post: tests approval, publishes nothing |
-| `image_gen.py` | Talks to the OpenAI / Gemini image models |
+| `image_gen.py` | Talks to the image models (Gemini by default) |
 | `tools/registry.py` | Catalog of all tools |
 | `tools/system_tools.py` | Windows tools (RAM, disk, Wi-Fi…) |
 | `tools/memory_tools.py` | Diary search tool |
 | `config.py` | All settings |
+| `cards.py` | Turns tool results into cards for the screen; decides which files the screen may show |
+| `frontend/` | The screen (React + TypeScript). Built version served at `/app/` |
 | `tests/` | Automated tests (offline, free) |
 
 For more detail on each file, see the **file guide** in the change log:
@@ -792,7 +968,14 @@ https://claude.ai/artifact/7rda8xaTM8AEm7YUvBKY7j
 cd backend
 ..\.venv\Scripts\python.exe -m uvicorn main:app --reload
 ```
-Open http://127.0.0.1:8000/docs
+Open **http://127.0.0.1:8000/app/** for the screen, or http://127.0.0.1:8000/docs for the raw API.
+
+**After changing the screen's code**, build it again (FATMEE then serves the new version at `/app/`):
+```powershell
+cd frontend
+npm run build
+```
+While working on the screen, `npm run dev` shows changes instantly at http://localhost:5173/app/ (the backend must be running too).
 
 **Ask a question:** in `POST /ask`, the box must contain exactly:
 ```json
@@ -823,15 +1006,15 @@ cd backend
 
 ## 9. What's next
 
-Done: Steps 1–13.
+Done: Steps 1–14.2.
 
-We build the whole brain first and **the screen once, at the end** (Step 18), so it's designed around every feature, including live voice. Until then, everything is tested in `/docs`.
+**Change of plan (23 Oct):** the screen came first (Step 14), and **it grows with each new tool** instead of being built once at the end.
 
-| # | Step | What you'll get |
-|---|---|---|
-| 14 | Semantic memory | Remembers people ("my sir") and facts (vector search, sqlite-vec) |
-| 15 | Gmail | Draft → 🔒 you approve → send |
-| 16 | Voice (brain side) | Speech → text, text → speech |
-| 17 | TARS personality | Humor / honesty settings |
-| 18 | **The frontend** | Chat, live talking, live progress, result cards, Approve buttons, desktop app |
-| 19+ | More | Jev trial, coding agent, GitHub |
+| # | Step | What you'll get | What the screen gets |
+|---|---|---|---|
+| 15 | Semantic memory | Remembers people ("my sir") and facts (vector search, sqlite-vec) | A "What FATMEE knows" panel: see and forget facts |
+| 16 | Gmail | Draft → 🔒 you approve → send | An email card and an email approval popup |
+| 17 | Voice | Speech → text, text → speech | A microphone button, live talking |
+| 18 | TARS personality | Humor / honesty settings | Settings sliders |
+| 19 | Desktop app | FATMEE in its own window (Tauri), starts with Windows | Same screens, no browser |
+| 20+ | More | Local images on the GB10 (FLUX), Jev trial, coding agent, GitHub | |

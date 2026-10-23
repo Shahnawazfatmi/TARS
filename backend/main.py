@@ -1,6 +1,7 @@
 import html
 import json
 import logging
+import os
 import re
 import threading
 import time
@@ -10,9 +11,11 @@ from typing import Literal
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Query, Request
 from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
 
+import cards
 import config
 import agents
 import task_logger
@@ -45,7 +48,7 @@ logger = logging.getLogger("fatmee")
 
 app = FastAPI(title="FATMEE")
 
-# OpenAI first, Gemini as fallback (see FATMEE_LLM_PROVIDERS)
+# Local model first, Gemini as fallback (see FATMEE_LLM_PROVIDERS)
 llm = LLM.from_config()
 
 # MCP servers (mcp_servers.json): web search now; LinkedIn, Gmail and
@@ -55,7 +58,7 @@ mcp.connect()
 set_manager(mcp)
 register_mcp_tools(mcp, mcp.servers)
 
-# Image models: OpenAI first, Gemini as fallback (see FATMEE_IMAGE_PROVIDERS)
+# Image models: Gemini by default (see FATMEE_IMAGE_PROVIDERS)
 images = ImageGenerator.from_config()
 
 # Agents share the same LLM and image models.
@@ -87,9 +90,9 @@ def llm_error_handler(request: Request, exc: LLMError):
         status_code=503,
         content={
             "response": (
-                "FATMEE could not reach any AI model (OpenAI or "
-                "Gemini). Check your internet connection and API "
-                "keys, then try again."
+                "FATMEE could not reach any AI model (the local "
+                "model server or Gemini). Check that the server is "
+                "on, your network and API keys, then try again."
             ),
             "error": str(exc),
         },
@@ -202,6 +205,76 @@ def mcp_status():
 
 
 # ============================================================
+# SCREEN (the frontend in ../frontend)
+# ============================================================
+
+def _model_name(model: str) -> str:
+    """A local model's name without its folder, e.g. "Qwen3.6-35B-A3B-Q4_K_M"."""
+
+    return os.path.splitext(os.path.basename(model))[0] if ("/" in model or "\\" in model) else model
+
+
+@app.get("/status")
+def screen_status():
+    """Everything the screen's header shows: models, LinkedIn, web search (no secrets)."""
+
+    linkedin = linkedin_api.status()
+
+    return {
+        "llm": [{"provider": p.name, "model": _model_name(p.model)} for p in llm.providers],
+        "images": [{"provider": p.name, "model": p.model} for p in images.providers],
+        "linkedin": {
+            "connected": bool(linkedin.get("connected")),
+            "dry_run": bool(linkedin.get("dry_run")),
+            "name": linkedin.get("name", ""),
+        },
+        "search": mcp.status.get("tavily", {}).get("state", "not configured"),
+    }
+
+
+class FileRequest(BaseModel):
+    path: str = Field(min_length=1, max_length=1000)
+
+
+def _servable_or_404(path: str):
+
+    target = cards.servable(path)
+
+    if target is None:
+        raise HTTPException(status_code=404, detail="FATMEE can only show files it made.")
+
+    return target
+
+
+@app.get("/files")
+def get_file(path: str = Query(min_length=1, max_length=1000)):
+    """A picture or document FATMEE made, for previews on the screen."""
+
+    return FileResponse(_servable_or_404(path))
+
+
+@app.post("/files/open")
+def open_file(data: FileRequest):
+    """Open a file FATMEE made in its usual Windows program (e.g. Word)."""
+
+    target = _servable_or_404(data.path)
+
+    if os.name != "nt":
+        raise HTTPException(status_code=501, detail="Opening files works on Windows only.")
+
+    os.startfile(target)
+
+    return {"opened": str(target)}
+
+
+# The built screen (npm run build in ../frontend) at /app.
+_FRONTEND = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "frontend", "dist")
+
+if os.path.isdir(_FRONTEND):
+    app.mount("/app", StaticFiles(directory=_FRONTEND, html=True), name="app")
+
+
+# ============================================================
 # ASK
 # ============================================================
 
@@ -235,7 +308,7 @@ def _remember(background, session_id, task_id, started_at, user_text, question, 
         user_text,
         reply["response"],
         task_id=task_id,
-        meta={"tools_used": reply.get("tools_used", []), "status": reply.get("status")},
+        meta={"tools_used": reply.get("tools_used", []), "status": reply.get("status"), "cards": reply.get("cards", [])},
     )
 
     background.add_task(

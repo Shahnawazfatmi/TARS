@@ -5,6 +5,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 
+import cards
 import config
 import task_logger
 from plan_check import PlanError, check_plan, execution_waves
@@ -404,7 +405,11 @@ def run_plan(
             on_event(
                 "step",
                 f"{step['tool']} {'finished' if ok else 'failed'} in {seconds:.1f}s",
-                {"id": step["id"], "tool": step["tool"], "ok": ok, "seconds": round(seconds, 2)},
+                {
+                    "id": step["id"], "tool": step["tool"], "ok": ok, "seconds": round(seconds, 2),
+                    "card": cards.card(step["tool"], result),
+                    "error": None if ok else str(result.get("error", ""))[:300],
+                },
             )
 
         # Duplicate steps share the first step's result.

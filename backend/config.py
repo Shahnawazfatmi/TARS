@@ -19,12 +19,30 @@ if os.getenv("FATMEE_NO_DOTENV") != "1":
 # ============================================================
 
 # Providers are tried in this order; the next one is used when
-# a call fails. Default: OpenAI first, Gemini as fallback.
+# a call fails. Default: the local model first, Gemini as fallback.
+# OpenAI still works when added here (e.g. "local,openai,gemini").
 LLM_PROVIDERS = [
     name.strip().lower()
-    for name in os.getenv("FATMEE_LLM_PROVIDERS", "openai,gemini").split(",")
+    for name in os.getenv("FATMEE_LLM_PROVIDERS", "local,gemini").split(",")
     if name.strip()
 ]
+
+# Local model on our own server (llama.cpp, vLLM, Ollama: any server
+# with an OpenAI-style /v1/chat/completions). Empty = skipped.
+LOCAL_LLM_URL = os.getenv("FATMEE_LOCAL_LLM_URL", "").strip()
+
+# The model name the server reports at <url>/models.
+LOCAL_LLM_MODEL = os.getenv("FATMEE_LOCAL_LLM_MODEL", "local")
+
+# Most local servers need no key.
+LOCAL_LLM_API_KEY = os.getenv("FATMEE_LOCAL_LLM_API_KEY", "not-needed")
+
+# Qwen-style models "think" before answering, which is slow and can
+# use up the whole answer. Off by default.
+LOCAL_LLM_THINKING = os.getenv("FATMEE_LOCAL_LLM_THINKING", "false").lower() == "true"
+
+# Local models write slower than cloud ones, so they get more time.
+LOCAL_LLM_TIMEOUT = float(os.getenv("FATMEE_LOCAL_LLM_TIMEOUT", "180"))
 
 # OPEN_AI_API_KEY is also accepted because that is the name
 # used in the existing .env.
@@ -167,9 +185,11 @@ DOCUMENT_INPUT_CHARS = int(os.getenv("FATMEE_DOCUMENT_INPUT_CHARS", "30000"))
 # ============================================================
 
 # Image providers are tried in this order (same keys as the text models).
+# The local model cannot make pictures, so Gemini is the default.
+# OpenAI still works when added here (e.g. "gemini,openai").
 IMAGE_PROVIDERS = [
     name.strip().lower()
-    for name in os.getenv("FATMEE_IMAGE_PROVIDERS", "openai,gemini").split(",")
+    for name in os.getenv("FATMEE_IMAGE_PROVIDERS", "gemini").split(",")
     if name.strip()
 ]
 
@@ -204,3 +224,30 @@ IMAGE_INPUT_CHARS = int(os.getenv("FATMEE_IMAGE_INPUT_CHARS", "8000"))
 # Characters of research context sent to the image model itself, next
 # to the picture description, so the scene matches the real subject.
 IMAGE_CONTEXT_CHARS = int(os.getenv("FATMEE_IMAGE_CONTEXT_CHARS", "1500"))
+
+
+# ============================================================
+# FILE READER (read_file, open_file)
+# ============================================================
+
+# Biggest file FATMEE will read, in MB.
+READ_MAX_FILE_MB = float(os.getenv("FATMEE_READ_MAX_FILE_MB", "200"))
+
+# Characters of text per AI call. Long files are read in parts of this
+# size and the notes combined (32,000 characters is about 8,000 tokens).
+READ_CHUNK_CHARS = int(os.getenv("FATMEE_READ_CHUNK_CHARS", "32000"))
+
+# Most parts read for one question. A longer file is read in part:
+# the parts that match the question, or a spread across the file.
+READ_MAX_PARTS = int(os.getenv("FATMEE_READ_MAX_PARTS", "8"))
+
+# Parts read at the same time (more helps only if the model server
+# serves several requests at once).
+READ_WORKERS = int(os.getenv("FATMEE_READ_WORKERS", "2"))
+
+# Extracted text and whole-file summaries are kept here, so a file is
+# only read once until it changes. Ignored by git.
+READ_CACHE_DIR = os.getenv(
+    "FATMEE_READ_CACHE_DIR",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "read_cache"),
+)
