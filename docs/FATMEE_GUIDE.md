@@ -782,6 +782,21 @@ FATMEE_OPENAI_IMAGE_QUALITY=low
 - 8 new offline tests (247 in total, all passing): cards for every tool, broken results never break a task, only FATMEE's own files can be fetched or opened, `/status` has no secrets, and the whole screen flow: events → cards → pause → approve → done → history keeps the cards.
 - **Live on the GB10 (free, nothing published):** a practice post went plan → steps with cards → paused in 17 s → approved → done in 8 s, and the saved file previewed. Screenshots of the real page in Edge checked the header, chat, panel and popup.
 
+**Update (23 Oct): futuristic motion.**
+- **A living background** (`Backdrop.tsx`): a faint network of nodes and links drifting behind the screen. It's calm when idle; while FATMEE works, light pulses race along the links, faster and more of them. When FATMEE needs your OK, it turns amber.
+- **The TARS core** (`TarsCore.tsx`): four monolith slabs, like TARS. They **breathe** when idle (big, inside two rotating rings, on the empty Mission control panel), **shift one after another** while working, glow **amber** when FATMEE needs your OK, and flash **green** when done (small, in the task header).
+- **Small effects:** a light sweep across the step that's running, a **check mark** drawn when a step finishes, cards and messages sliding in, a scanning line under the top bar while working, a glow on the input box, and a slow shine across the welcome title.
+- **Light on the PC:** the background draws about 30 frames a second, pauses when the tab is hidden, and shows a still picture if Windows "reduce motion" is on (then every animation is off).
+
+**Update (23 Oct): screen v2, from your mockup.** Only real features were kept; nothing is faked.
+- **Left sidebar:** FATMEE "Your AI Co-Worker" with the TARS core, and four pages: **Chat**; **Tasks** (FATMEE's real task diary, `GET /episodes`, with All / Done / Waiting / Partly done / Failed filters and each task's answer); **Tools** (the real tool list, `GET /tools`, "Needs your OK" marked); **Files** (pictures, Word reports and practice posts FATMEE made, with previews and Open, from the new `GET /files/recent`). At the bottom, the assistant card and **Online · Local LLM**.
+- **Chat:** avatars, "AI Assistant" badge, the time of each message, a **copy** button on answers, a glowing round composer, and 5 quick-action chips (Search the web, Create image, Write a post, Create document, Check system). A chip fills the box with a starter sentence; you finish it and press Send.
+- **Right column:** **Mission Control** (the live task), **Recent Activity** (your last 5 real tasks with status: done ✓, waiting ⏱, failed ✕; "View all" opens Tasks), **Quick Tools** (Research, Generate image, Create doc, Read a file), **System Status** (real RAM, battery and network from the new `GET /system`, every 30 s).
+- **Each page has a link:** `/app/#tasks`, `/app/#tools`, `/app/#files`.
+- **Left out on purpose** (not built yet, so not shown): Memory and Settings pages, search, light/dark switch, a model picker, window buttons (it's a browser app until Step 19), and attaching files or images. The mockup's "DALL-E / Flux" and "PDF / Markdown" were changed to what FATMEE really does (AI image, Word report).
+- **Found while building:** `/files/recent` listed each file 2–3 times when the picture, report and practice folders are the same folder; fixed.
+- Tests: 2 new (268 in total).
+
 **Not done yet (next versions of the screen):**
 - Editing the post in the popup (you chose approve or reject only).
 - A list of past chats (now: one "New chat" button).

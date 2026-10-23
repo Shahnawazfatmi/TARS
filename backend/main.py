@@ -32,6 +32,7 @@ from memory import (
     get_episode_store,
     resolve_period,
 )
+from tools import system_tools
 from tools.registry import register_mcp_tools, tool_parameters, tool_specs
 
 
@@ -230,6 +231,51 @@ def screen_status():
         },
         "search": mcp.status.get("tavily", {}).get("state", "not configured"),
     }
+
+
+@app.get("/system")
+def screen_system():
+    """RAM, battery and internet for the screen's System Status card (read-only, no AI)."""
+
+    def safe(read):
+        try:
+            return read()
+        except Exception as e:
+            return {"error": type(e).__name__}
+
+    return {
+        "ram": safe(system_tools.get_ram_usage),
+        "battery": safe(system_tools.get_battery_status),
+        "internet": safe(system_tools.check_internet_connection),
+    }
+
+
+@app.get("/files/recent")
+def recent_files(limit: int = Query(30, ge=1, le=200)):
+    """Files FATMEE made (pictures, reports, practice posts), newest first."""
+
+    found = []
+
+    # Settings may point several outputs at one folder: list it once.
+    for folder in dict.fromkeys(cards.output_folders()):
+        if not folder.is_dir():
+            continue
+
+        for path in folder.iterdir():
+            if path.is_file() and cards.servable(str(path)):
+                stat = path.stat()
+                found.append({
+                    "name": path.name,
+                    "path": str(path),
+                    "folder": folder.name,
+                    "kind": "image" if path.suffix.lower() in (".png", ".jpg", ".jpeg", ".gif", ".webp") else path.suffix.lower().lstrip("."),
+                    "size_kb": round(stat.st_size / 1024),
+                    "modified": datetime.fromtimestamp(stat.st_mtime).isoformat(timespec="seconds"),
+                })
+
+    found.sort(key=lambda f: f["modified"], reverse=True)
+
+    return {"files": found[:limit], "total": len(found)}
 
 
 class FileRequest(BaseModel):

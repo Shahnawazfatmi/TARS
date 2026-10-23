@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
-import { seconds, ToolIcon, toolLabel } from "../labels";
+import { Icon, seconds, ToolIcon, toolLabel } from "../labels";
 import { PHASE_TEXT } from "../task";
 import type { Card, StepState, TaskState } from "../types";
 import { CardGrid } from "./Cards";
+import { TarsCore, type CoreState } from "./TarsCore";
 
 const STAGES: { key: string; label: string }[] = [
   { key: "planning", label: "Plan" },
@@ -10,6 +11,11 @@ const STAGES: { key: string; label: string }[] = [
   { key: "checking", label: "Check" },
   { key: "answering", label: "Answer" },
 ];
+
+export function coreState(phase: TaskState["phase"]): CoreState {
+  if (phase === "waiting" || phase === "done" || phase === "failed") return phase;
+  return "working";
+}
 
 function stageState(task: TaskState, key: string) {
   const order = ["planning", "running", "checking", "answering", "done"];
@@ -36,7 +42,7 @@ function StepRow({ step }: { step: StepState }) {
 
   return (
     <li className={`step step-${step.status}`}>
-      <span className="step-light" aria-hidden="true" />
+      <span className="step-light" aria-hidden="true">{step.status === "done" && <svg viewBox="0 0 12 12"><path d="M2.5 6.2 5 8.6 9.6 3.6" /></svg>}</span>
       <span className="step-icon"><ToolIcon tool={step.tool} /></span>
       <div className="step-text">
         <span className="step-name">{toolLabel(step.tool, running)}{running && <span className="dots" />}</span>
@@ -50,60 +56,60 @@ function StepRow({ step }: { step: StepState }) {
   );
 }
 
-export function TaskPanel({ task, cards, onZoom }: { task: TaskState | null; cards: Card[]; onZoom: (src: string) => void }) {
+/** The live task: stages, steps with timers, results and the activity log. */
+export function MissionControl({ task, cards, onZoom }: { task: TaskState | null; cards: Card[]; onZoom: (src: string) => void }) {
   const live = !!task && !["done", "failed", "waiting"].includes(task.phase);
   useTick(live);
 
   if (!task) {
     return (
-      <aside className="panel panel-empty">
-        <div className="empty">
-          <div className="empty-mark" aria-hidden="true"><span /><span /></div>
-          <h3>Mission control</h3>
-          <p>Give FATMEE a task. Each step shows up here live: searching, writing, making images, posting. Anything public waits for your OK.</p>
-        </div>
-      </aside>
+      <section className="panel-card mission">
+        <header className="panel-card-head">
+          <span className="mission-icon"><TarsCore state="idle" /></span>
+          <h2>Mission Control</h2>
+          <span className="light light-ok" title="Ready" />
+        </header>
+        <p className="muted small">Give FATMEE a task. Each step shows up here live: searching, writing, making images, posting. Anything public waits for your OK.</p>
+      </section>
     );
   }
 
   const total = ((task.endedAt || Date.now()) - task.startedAt) / 1000;
 
   return (
-    <aside className="panel">
-      <header className="panel-head">
-        <div className="panel-title">
-          <span className={`pulse pulse-${task.phase}`} aria-hidden="true" />
-          <span>{PHASE_TEXT[task.phase]}</span>
-          <span className="panel-clock">{seconds(total)}</span>
-        </div>
-        <p className="panel-question" title={task.question}>{task.question}</p>
-        <ol className="stages">
-          {STAGES.map((s) => <li key={s.key} className={`stage stage-${stageState(task, s.key)}`}>{s.label}</li>)}
-        </ol>
+    <section className={`panel-card mission mission-${task.phase}`}>
+      <header className="panel-card-head">
+        <span className="mission-icon"><TarsCore state={coreState(task.phase)} /></span>
+        <h2>Mission Control</h2>
+        <span className="panel-clock">{seconds(total)}</span>
       </header>
 
-      <section className="panel-section">
-        <h4 className="section-label">Steps</h4>
-        {task.steps.length ? (
-          <ul className="steps">{task.steps.map((step) => <StepRow key={step.id} step={step} />)}</ul>
-        ) : (
-          <p className="muted small">{task.phase === "planning" ? "Working out the plan…" : "No tools needed for this one."}</p>
-        )}
-      </section>
+      <div className="mission-status">{PHASE_TEXT[task.phase]}</div>
+      <p className="mission-question" title={task.question}>{task.question}</p>
 
-      {!!cards.length && (
-        <section className="panel-section">
-          <h4 className="section-label">Results</h4>
-          <CardGrid cards={cards} onZoom={onZoom} />
-        </section>
+      <ol className="stages">
+        {STAGES.map((s) => <li key={s.key} className={`stage stage-${stageState(task, s.key)}`}>{s.label}</li>)}
+      </ol>
+
+      {task.steps.length ? (
+        <ul className="steps">{task.steps.map((step) => <StepRow key={step.id} step={step} />)}</ul>
+      ) : (
+        <p className="muted small">{task.phase === "planning" ? "Working out the plan…" : "No tools needed: answering from knowledge."}</p>
       )}
 
-      <details className="panel-section log">
-        <summary className="section-label">Activity log ({task.log.length})</summary>
+      {!!cards.length && (
+        <div className="mission-results">
+          <h3 className="section-label">Results</h3>
+          <CardGrid cards={cards} onZoom={onZoom} />
+        </div>
+      )}
+
+      <details className="log">
+        <summary className="section-label"><Icon name="tasks" size={12} /> Activity log ({task.log.length})</summary>
         <ul>
           {task.log.map((e) => <li key={e.n}><span className="log-time">{e.time}</span> {e.message}</li>)}
         </ul>
       </details>
-    </aside>
+    </section>
   );
 }

@@ -139,3 +139,32 @@ def test_screen_flow_events_cards_and_approval(client):
     # the conversation keeps the cards, for the screen's history
     history = client.get("/sessions/default").json()["messages"]
     assert history[-1]["meta"]["cards"]
+
+
+# ---------------- side panels ----------------
+
+def test_system_status_reads_real_tools(client, monkeypatch):
+    from tools import system_tools
+    monkeypatch.setattr(system_tools, "get_ram_usage", lambda: {"usage_percent": 50})
+    monkeypatch.setattr(system_tools, "get_battery_status", lambda: 1 / 0)
+    monkeypatch.setattr(system_tools, "check_internet_connection", lambda: {"online": True})
+
+    status = client.get("/system").json()
+
+    assert status["ram"] == {"usage_percent": 50} and status["internet"]["online"] is True
+    # one broken reading never breaks the card
+    assert status["battery"] == {"error": "ZeroDivisionError"}
+
+
+def test_recent_files_lists_only_fatmee_files_newest_first(client, docs_dir):
+    import os
+    old, new = docs_dir / "old.png", docs_dir / "new report.docx"
+    old.write_bytes(b"png")
+    new.write_bytes(b"docx")
+    (docs_dir / "notes.py").write_text("x")
+    os.utime(old, (1_700_000_000, 1_700_000_000))
+
+    files = client.get("/files/recent").json()["files"]
+
+    assert [f["name"] for f in files][:2] == ["new report.docx", "old.png"]
+    assert {f["kind"] for f in files} >= {"image", "docx"} and all(f["name"] != "notes.py" for f in files)

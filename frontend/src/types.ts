@@ -71,6 +71,7 @@ export interface Status {
 export interface ChatMessage {
   role: "user" | "assistant";
   content: string;
+  time?: string;
   cards?: Card[];
   taskId?: string | null;
   status?: string;
@@ -103,4 +104,39 @@ export interface TaskState {
   endedAt?: number;
   lastEvent: number;
   log: ProgressEvent[];
+}
+
+export interface Episode {
+  task_id: string;
+  session_id: string;
+  started_at: string;
+  duration_s: number | null;
+  question: string;
+  goal: string | null;
+  tools: string[];
+  status: "answered" | "partial" | "failed" | "waiting_approval" | string;
+  summary: string | null;
+  problems: string | null;
+}
+
+export interface ToolSpec {
+  name: string;
+  description: string;
+  parameters?: Record<string, string>;
+  needs_approval?: boolean;
+}
+
+export interface SystemInfo {
+  ram: { usage_percent?: number; used_gb?: number; total_gb?: number; error?: string };
+  battery: { has_battery?: boolean; percent?: number; plugged_in?: boolean; error?: string };
+  internet: { online?: boolean; latency_ms?: number; error?: string };
+}
+
+export interface RecentFile {
+  name: string;
+  path: string;
+  folder: string;
+  kind: string;
+  size_kb: number;
+  modified: string;
 }

@@ -1,9 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import * as api from "./api";
 import { ApprovalModal } from "./components/ApprovalModal";
+import { Backdrop } from "./components/Backdrop";
 import { Chat } from "./components/Chat";
 import { Header } from "./components/Header";
-import { TaskPanel } from "./components/TaskPanel";
+import { RightPanel } from "./components/RightPanel";
+import { Sidebar, type View } from "./components/Sidebar";
+import { coreState } from "./components/TaskPanel";
+import { FilesView, TasksView, ToolsView } from "./components/Views";
 import { applyEvent, newTask } from "./task";
 import type { Card, ChatMessage, PendingStep, Reply, Status, TaskState } from "./types";
 
@@ -41,6 +45,23 @@ export default function App() {
   const [status, setStatus] = useState<Status | null>(null);
   const [offline, setOffline] = useState(false);
   const [zoom, setZoom] = useState("");
+  // Each page has its own link: /app/#tasks, #tools, #files.
+  const [view, setViewState] = useState<View>(() => {
+    const hash = window.location.hash.slice(1);
+    return (["chat", "tasks", "tools", "files"] as View[]).includes(hash as View) ? (hash as View) : "chat";
+  });
+  const setView = useCallback((next: View) => {
+    setViewState(next);
+    try {
+      history.replaceState(null, "", next === "chat" ? window.location.pathname : `#${next}`);
+    } catch {
+      /* not allowed here: the page still switches */
+    }
+  }, []);
+  const [draft, setDraft] = useState("");
+  // Bumped when a task finishes, so Recent Activity reloads.
+  const [finished, setFinished] = useState(0);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
   const stopFollowing = useRef<() => void>(() => {});
 
   // Header status, refreshed every 30 s.
@@ -72,8 +93,9 @@ export default function App() {
   function showReply(reply: Reply, question: string) {
     setMessages((list) => [
       ...list.filter((m) => !m.pending),
-      { role: "assistant", content: reply.response, cards: reply.status === "done" ? reply.cards : [], taskId: reply.task_id, status: reply.status },
+      { role: "assistant", content: reply.response, cards: reply.status === "done" ? reply.cards : [], taskId: reply.task_id, status: reply.status, time: new Date().toISOString() },
     ]);
+    setFinished((n) => n + 1);
 
     if (reply.status === "waiting_approval" && reply.approvals?.length) {
       setWaiting({ taskId: reply.task_id, question, pending: reply.approvals });
@@ -83,7 +105,7 @@ export default function App() {
   function showError(error: unknown) {
     setMessages((list) => [
       ...list.filter((m) => !m.pending),
-      { role: "assistant", content: `Something went wrong: ${error instanceof Error ? error.message : String(error)}`, error: true },
+      { role: "assistant", content: `Something went wrong: ${error instanceof Error ? error.message : String(error)}`, error: true, time: new Date().toISOString() },
     ]);
     setTask((current) => (current ? { ...current, phase: "failed", endedAt: Date.now() } : current));
   }
@@ -93,7 +115,8 @@ export default function App() {
 
     setBusy(true);
     setTask(newTask(taskId, question));
-    setMessages((list) => [...list, { role: "user", content: question }, { role: "assistant", content: "Working on it", pending: true }]);
+    setView("chat");
+    setMessages((list) => [...list, { role: "user", content: question, time: new Date().toISOString() }, { role: "assistant", content: "Working on it", pending: true }]);
 
     // Follow first, so no event is missed while /ask runs.
     followTask(taskId, 0);
@@ -120,7 +143,7 @@ export default function App() {
 
     setMessages((list) => [
       ...list,
-      { role: "user", content: decision === "approve" ? "Approved." : "Rejected." },
+      { role: "user", content: decision === "approve" ? "Approved." : "Rejected.", time: new Date().toISOString() },
       { role: "assistant", content: decision === "approve" ? "Continuing" : "Skipping that step", pending: true },
     ]);
     setWaiting(null);
@@ -146,16 +169,36 @@ export default function App() {
     setSessionId(id);
     setTask(null);
     setWaiting(null);
+    setView("chat");
   }
+
+  function pick(text: string) {
+    setView("chat");
+    setDraft(text);
+    setTimeout(() => inputRef.current?.focus(), 0);
+  }
+
+  const core = waiting ? "waiting" : busy ? "working" : task ? coreState(task.phase) === "failed" ? "failed" : "idle" : "idle";
+  const titles: Record<View, string> = {
+    chat: "Multi-agent AI coworker for your desktop", tasks: "Task history", tools: "What FATMEE can do", files: "Files FATMEE made",
+  };
 
   return (
     <div className="app">
-      <Header status={status} offline={offline} onNewChat={newChat} />
+      <Backdrop mood={waiting ? "waiting" : busy ? "working" : "idle"} />
+      <Sidebar view={view} onView={setView} status={status} offline={offline} core={core} />
 
-      <div className="layout">
-        <Chat messages={messages} busy={busy} onSend={send} onZoom={setZoom} />
-        <TaskPanel task={task} cards={cards} onZoom={setZoom} />
-      </div>
+      <main className="main">
+        <Header title={titles[view]} busy={busy} offline={offline} onNewChat={newChat} />
+        {view === "chat" && (
+          <Chat messages={messages} busy={busy} draft={draft} onDraft={setDraft} inputRef={inputRef} onSend={send} onZoom={setZoom} />
+        )}
+        {view === "tasks" && <TasksView />}
+        {view === "tools" && <ToolsView />}
+        {view === "files" && <FilesView onZoom={setZoom} />}
+      </main>
+
+      <RightPanel task={task} cards={cards} refresh={finished} onZoom={setZoom} onPick={pick} onViewAll={() => setView("tasks")} />
 
       {waiting && !deciding && (
         <ApprovalModal

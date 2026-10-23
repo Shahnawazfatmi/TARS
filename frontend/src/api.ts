@@ -1,7 +1,7 @@
 // FATMEE's API. In dev the screen calls /api (Vite forwards it to :8000);
 // when FATMEE serves the built screen at /app, the API is on the same origin.
 
-import type { ChatMessage, ProgressEvent, Reply, Status, WaitingTask } from "./types";
+import type { ChatMessage, Episode, ProgressEvent, RecentFile, Reply, Status, SystemInfo, ToolSpec, WaitingTask } from "./types";
 
 export const API = import.meta.env.DEV ? "/api" : "";
 
@@ -35,6 +35,15 @@ export const waitingTasks = () => call<{ waiting: number; tasks: WaitingTask[] }
 
 export const status = () => call<Status>("/status");
 
+export const episodes = (limit = 20, status = "") =>
+  call<{ found: number; episodes: Episode[] }>(`/episodes?limit=${limit}${status ? `&status=${status}` : ""}`);
+
+export const tools = () => call<ToolSpec[]>("/tools");
+
+export const system = () => call<SystemInfo>("/system");
+
+export const recentFiles = (limit = 60) => call<{ files: RecentFile[]; total: number }>(`/files/recent?limit=${limit}`);
+
 export const openFile = (path: string) =>
   call<{ opened: string }>("/files/open", { method: "POST", body: JSON.stringify({ path }) });
 
@@ -46,6 +55,7 @@ export async function history(sessionId: string): Promise<ChatMessage[]> {
   return body.messages.map((m) => ({
     role: m.role,
     content: m.content,
+    time: m.created_at,
     taskId: m.task_id,
     cards: m.meta?.cards || [],
     status: m.meta?.status,
